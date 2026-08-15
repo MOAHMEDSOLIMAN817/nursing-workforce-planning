@@ -1,0 +1,53 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: #f7f7fa;
+  color: #17233c;
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer components {
+  .card {
+    @apply bg-card rounded-2xl border border-border shadow-soft;
+  }
+
+  .input {
+    @apply w-full rounded-xl border border-border bg-white px-3.5 py-2.5 text-sm text-navy
+      outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15
+      placeholder:text-navy/30;
+  }
+
+  .label {
+    @apply mb-1.5 block text-xs font-semibold uppercase tracking-wide text-navy/60;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-5 py-2.5
+      text-sm font-semibold text-white shadow-soft transition hover:bg-deep
+      disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-border
+      bg-white px-4 py-2.5 text-sm font-semibold text-navy transition hover:bg-softbg;
+  }
+
+  .btn-teal {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-teal px-5 py-2.5
+      text-sm font-semibold text-white shadow-soft transition hover:brightness-95;
+  }
+}
