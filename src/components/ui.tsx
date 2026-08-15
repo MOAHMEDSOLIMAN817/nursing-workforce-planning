@@ -75,13 +75,15 @@ export function StatusBadge({ status }: { status: StaffingStatus }) {
 }
 
 export function Field({ label, error, children, hint }: { label: string; error?: string; children: ReactNode; hint?: string }) {
+  // Wrapping in <label> natively associates the caption with the single control
+  // inside it (accessibility + testability). A <span> keeps the HTML valid.
   return (
-    <div>
-      <label className="label">{label}</label>
+    <label className="block">
+      <span className="label">{label}</span>
       {children}
       {hint && !error && <p className="mt-1 text-xs text-navy/40">{hint}</p>}
       {error && <p className="mt-1 text-xs font-medium text-shortage">{error}</p>}
-    </div>
+    </label>
   );
 }
 
@@ -90,6 +92,44 @@ export function EmptyState({ title, description }: { title: string; description?
     <div className="rounded-xl border border-dashed border-border bg-softbg/40 px-6 py-10 text-center">
       <p className="text-sm font-semibold text-navy/70">{title}</p>
       {description && <p className="mt-1 text-xs text-navy/45">{description}</p>}
+    </div>
+  );
+}
+
+// Placeholder for modules that are scaffolded but not yet implemented.
+export function ComingSoon({
+  icon,
+  title,
+  description,
+  planned,
+}: {
+  icon?: ReactNode;
+  title: string;
+  description?: string;
+  planned?: string[];
+}) {
+  return (
+    <div className="card flex flex-col items-center px-6 py-14 text-center">
+      {icon && (
+        <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-softbg text-primary">
+          {icon}
+        </div>
+      )}
+      <p className="text-lg font-bold text-navy">{title}</p>
+      {description && <p className="mt-2 max-w-md text-sm text-navy/55">{description}</p>}
+      <span className="mt-4 inline-flex items-center rounded-full bg-attention/10 px-3 py-1 text-xs font-bold uppercase tracking-wide text-attention">
+        Coming soon
+      </span>
+      {planned && planned.length > 0 && (
+        <ul className="mt-6 grid max-w-md grid-cols-1 gap-2 text-left text-sm text-navy/65 sm:grid-cols-2">
+          {planned.map((p) => (
+            <li key={p} className="flex items-start gap-2 rounded-xl border border-border bg-white px-3 py-2">
+              <span className="mt-0.5 text-teal">•</span>
+              <span>{p}</span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

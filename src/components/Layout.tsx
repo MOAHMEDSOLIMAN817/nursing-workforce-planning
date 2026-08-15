@@ -40,7 +40,7 @@ export function Layout({ children }: { children: ReactNode }) {
                 </svg>
               </button>
               <div>
-                <h1 className="text-lg font-bold text-navy">Nursing Workforce Planning</h1>
+                <h1 className="text-lg font-bold text-navy">Healthcare Workforce Planning</h1>
                 <p className="text-xs text-navy/50">Workforce Capacity &amp; Staffing Intelligence</p>
               </div>
             </div>

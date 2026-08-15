@@ -49,3 +49,31 @@ export function validatePlanning(input: ValidationInput): ValidationErrors {
 
   return errors;
 }
+
+// ---------------------------------------------------------------------------
+// Physician unit validation
+// ---------------------------------------------------------------------------
+
+export interface PhysicianUnitInput {
+  unit: string;
+  beds: number;
+  occupancyRate: number;
+  staffingRatio: number;
+  currentFte: number;
+}
+
+export function validatePhysicianUnit(input: PhysicianUnitInput): ValidationErrors {
+  const errors: ValidationErrors = {};
+
+  if (!input.unit || input.unit.trim() === '') errors.unit = 'Unit name is required.';
+  if (Number.isNaN(input.beds) || input.beds < 0) errors.beds = 'Beds cannot be negative.';
+  if (Number.isNaN(input.occupancyRate) || input.occupancyRate < 0)
+    errors.occupancyRate = 'Occupancy cannot be below 0%.';
+  else if (input.occupancyRate > 100) errors.occupancyRate = 'Occupancy cannot exceed 100%.';
+  if (Number.isNaN(input.staffingRatio) || !(input.staffingRatio > 0))
+    errors.staffingRatio = 'Staffing ratio must be greater than 0.';
+  if (Number.isNaN(input.currentFte) || input.currentFte < 0)
+    errors.currentFte = 'Current FTE cannot be negative.';
+
+  return errors;
+}
