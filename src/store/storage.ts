@@ -8,6 +8,7 @@ import type {
   PhysicianUnit,
   PlanningRecord,
   Settings,
+  UnitMapping,
 } from '../lib/types';
 import { uid } from '../lib/format';
 
@@ -17,6 +18,7 @@ const KEYS = {
   records: 'nwp.records.v1',
   physicianUnits: 'nwp.physicianUnits.v1',
   nurseUnits: 'nwp.nurseUnits.v1',
+  unitMappings: 'nwp.unitMappings.v1',
 } as const;
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -227,4 +229,12 @@ export function loadNurseUnits(): NurseUnit[] {
 }
 export function saveNurseUnits(list: NurseUnit[]): void {
   write(KEYS.nurseUnits, list);
+}
+
+// ---- Unit mappings (source name -> planning unit) ----
+export function loadUnitMappings(): UnitMapping[] {
+  return read<UnitMapping[]>(KEYS.unitMappings, []);
+}
+export function saveUnitMappings(list: UnitMapping[]): void {
+  write(KEYS.unitMappings, list);
 }

@@ -7,6 +7,19 @@ export type OpdClass = 'Surgery' | 'Non-Surgery' | 'Mixed';
 
 export type StaffingStatus = 'SHORTAGE' | 'BALANCED' | 'SURPLUS';
 
+// The two clinical workforces the planner tracks.
+export type WorkforceType = 'Physician' | 'Nurse';
+
+// Explicit (non-fuzzy) mapping from an external / actual source unit name to a
+// planning unit. Each source name maps to exactly one planning unit so a given
+// Current FTE record can never be counted against two units.
+export interface UnitMapping {
+  id: string;
+  sourceName: string;
+  workforceType: WorkforceType;
+  planningUnitId: string; // id of a PhysicianUnit or NurseUnit
+}
+
 // Configurable defaults. These MUST feed the calculation logic — never hardcode.
 export interface Settings {
   // --- Global workforce assumptions (shared by all planning modules) ---

@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import type { Department, NurseUnit, PhysicianUnit, PlanningRecord, Settings } from '../lib/types';
+import type { Department, NurseUnit, PhysicianUnit, PlanningRecord, Settings, UnitMapping } from '../lib/types';
 import {
   DEFAULT_HOSPITAL,
   loadDepartments,
@@ -15,11 +15,13 @@ import {
   loadPhysicianUnits,
   loadRecords,
   loadSettings,
+  loadUnitMappings,
   saveDepartments,
   saveNurseUnits,
   savePhysicianUnits,
   saveRecords,
   saveSettings,
+  saveUnitMappings,
 } from './storage';
 
 interface AppState {
@@ -29,6 +31,7 @@ interface AppState {
   records: PlanningRecord[];
   physicianUnits: PhysicianUnit[];
   nurseUnits: NurseUnit[];
+  unitMappings: UnitMapping[];
   // period selector shown in the header
   period: { month: number; year: number };
   setPeriod: (p: { month: number; year: number }) => void;
@@ -36,6 +39,7 @@ interface AppState {
   setDepartments: (d: Department[]) => void;
   setPhysicianUnits: (u: PhysicianUnit[]) => void;
   setNurseUnits: (u: NurseUnit[]) => void;
+  setUnitMappings: (m: UnitMapping[]) => void;
   addRecord: (r: PlanningRecord) => void;
   deleteRecord: (id: string) => void;
 }
@@ -49,6 +53,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [records, setRecords] = useState<PlanningRecord[]>(() => loadRecords());
   const [physicianUnits, setPhysicianUnitsState] = useState<PhysicianUnit[]>(() => loadPhysicianUnits());
   const [nurseUnits, setNurseUnitsState] = useState<NurseUnit[]>(() => loadNurseUnits());
+  const [unitMappings, setUnitMappingsState] = useState<UnitMapping[]>(() => loadUnitMappings());
   const [period, setPeriod] = useState({ month: now.getMonth() + 1, year: now.getFullYear() });
 
   useEffect(() => saveSettings(settings), [settings]);
@@ -56,11 +61,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => saveRecords(records), [records]);
   useEffect(() => savePhysicianUnits(physicianUnits), [physicianUnits]);
   useEffect(() => saveNurseUnits(nurseUnits), [nurseUnits]);
+  useEffect(() => saveUnitMappings(unitMappings), [unitMappings]);
 
   const updateSettings = useCallback((s: Settings) => setSettings(s), []);
   const setDepartments = useCallback((d: Department[]) => setDepartmentsState(d), []);
   const setPhysicianUnits = useCallback((u: PhysicianUnit[]) => setPhysicianUnitsState(u), []);
   const setNurseUnits = useCallback((u: NurseUnit[]) => setNurseUnitsState(u), []);
+  const setUnitMappings = useCallback((m: UnitMapping[]) => setUnitMappingsState(m), []);
   const addRecord = useCallback(
     (r: PlanningRecord) => setRecords((prev) => [r, ...prev]),
     [],
@@ -78,16 +85,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
       records,
       physicianUnits,
       nurseUnits,
+      unitMappings,
       period,
       setPeriod,
       updateSettings,
       setDepartments,
       setPhysicianUnits,
       setNurseUnits,
+      setUnitMappings,
       addRecord,
       deleteRecord,
     }),
-    [settings, departments, records, physicianUnits, nurseUnits, period, updateSettings, setDepartments, setPhysicianUnits, setNurseUnits, addRecord, deleteRecord],
+    [settings, departments, records, physicianUnits, nurseUnits, unitMappings, period, updateSettings, setDepartments, setPhysicianUnits, setNurseUnits, setUnitMappings, addRecord, deleteRecord],
   );
 
   return <AppCtx.Provider value={value}>{children}</AppCtx.Provider>;
