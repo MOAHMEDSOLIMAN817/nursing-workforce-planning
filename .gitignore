@@ -11,3 +11,17 @@ vite.config.d.ts
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Local environment files & secrets — never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.json
+.secrets
+
+# Temporary / scratch test files
+_*.mjs
+*.tmp
+coverage
