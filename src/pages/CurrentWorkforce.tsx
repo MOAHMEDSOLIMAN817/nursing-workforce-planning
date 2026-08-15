@@ -8,7 +8,7 @@ import {
   physicianTotals,
   type PhysicianAssumptions,
 } from '../services/workforceCalculator';
-import { latestPerDepartment, toSummary, totals as nurseTotals } from '../lib/aggregate';
+import { calcNurseUnit, nurseTotals } from '../services/nursingCalculator';
 import { fmtInt } from '../lib/format';
 import type { PhysicianUnit } from '../lib/types';
 
@@ -19,20 +19,26 @@ const STATUS_CLS: Record<string, string> = {
 };
 
 export function CurrentWorkforce() {
-  const { physicianUnits, setPhysicianUnits, settings, records } = useApp();
+  const { physicianUnits, setPhysicianUnits, nurseUnits, settings } = useApp();
 
   const assumptions: PhysicianAssumptions = {
     coverageHoursPerDay: settings.coverageHoursPerDay,
     workingDaysPerMonth: settings.workingDaysPerMonth,
     availableHoursPerFteMonth: settings.availableHoursPerFteMonth,
   };
+  const aKey = `${assumptions.coverageHoursPerDay}|${assumptions.workingDaysPerMonth}|${assumptions.availableHoursPerFteMonth}`;
 
   const rows = useMemo(
     () => physicianUnits.map((u) => ({ unit: u, calc: calcPhysicianUnit(u, assumptions) })),
-    [physicianUnits, assumptions.coverageHoursPerDay, assumptions.workingDaysPerMonth, assumptions.availableHoursPerFteMonth],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [physicianUnits, aKey],
   );
   const t = useMemo(() => physicianTotals(rows.map((r) => r.calc)), [rows]);
-  const nurse = useMemo(() => nurseTotals(toSummary(latestPerDepartment(records))), [records]);
+  const nurse = useMemo(
+    () => nurseTotals(nurseUnits, nurseUnits.map((u) => calcNurseUnit(u, assumptions))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [nurseUnits, aKey],
+  );
 
   const updateFte = (id: string, currentFte: number) => {
     setPhysicianUnits(physicianUnits.map((u: PhysicianUnit) => (u.id === id ? { ...u, currentFte } : u)));
@@ -48,8 +54,8 @@ export function CurrentWorkforce() {
       <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
         <KpiCard label="Physicians in Post" value={fmtInt(t.currentFte)} tone="teal" />
         <KpiCard label="Physicians Required" value={fmtInt(t.requiredHeadcount)} tone="purple" />
-        <KpiCard label="Nurses in Post" value={fmtInt(nurse.currentHc)} tone="teal" hint="Latest saved nurse plans" />
-        <KpiCard label="Nurses Required" value={fmtInt(nurse.requiredHc)} tone="purple" hint="Latest saved nurse plans" />
+        <KpiCard label="Nurses in Post" value={fmtInt(nurse.currentFte)} tone="teal" hint="From Nurses Planning" />
+        <KpiCard label="Nurses Required" value={fmtInt(nurse.requiredHeadcount)} tone="purple" hint="From Nurses Planning" />
       </div>
 
       <Section
@@ -138,7 +144,7 @@ export function CurrentWorkforce() {
             <div className="flex items-center gap-2 text-sm">
               <Users className="h-4 w-4 text-teal" />
               <span className="text-navy/60">Nurses</span>
-              <b className="text-navy">{fmtInt(nurse.currentHc)}</b>
+              <b className="text-navy">{fmtInt(nurse.currentFte)}</b>
             </div>
           </div>
         </Section>

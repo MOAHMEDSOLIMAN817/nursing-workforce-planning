@@ -77,6 +77,62 @@ export interface CalcResult {
 }
 
 // ---------------------------------------------------------------------------
+// Nurses Workforce Planning
+// ---------------------------------------------------------------------------
+
+// Which staffing formula a nursing unit uses. Inpatient units are driven by bed
+// occupancy; clinic/ambulatory units are driven by clinics × nurses × hours.
+export type NurseUnitModel = 'Inpatient' | 'Clinic';
+
+export type NurseUnitType =
+  | 'Critical Care'
+  | 'Inpatient Ward'
+  | 'Clinic'
+  | 'Emergency'
+  | 'Operating Room'
+  | 'Procedure Unit'
+  | 'Delivery Room'
+  | 'Other';
+
+// Editable inputs captured per nursing unit. Only the fields relevant to the
+// unit's model are used by the calculator; the rest are ignored (but kept so
+// switching model back and forth preserves data).
+export interface NurseUnit {
+  id: string;
+  unit: string;
+  unitType: NurseUnitType;
+  model: NurseUnitModel;
+  // Inpatient model
+  beds: number;
+  occupancyRate: number; // percentage 0-100
+  staffingRatio: number; // patients per nurse (e.g. 2 => 1 nurse : 2 patients)
+  // Clinic model
+  clinics: number;
+  nursesPerClinic: number;
+  operatingHoursPerDay: number; // clinic operating hours per day (e.g. 10)
+  clinicWorkingDays: number; // clinic working days per month (e.g. 26)
+  // Common
+  currentFte: number; // actual nurses on staff — never seeded, entered by the user
+}
+
+// Fully calculated row for a nursing unit (all values read-only in the UI).
+export interface NurseCalc {
+  model: NurseUnitModel;
+  occupiedBeds: number; // inpatient only (0 for clinic)
+  requiredPerShift: number; // concurrent nurses
+  requiredHoursDay: number;
+  requiredHoursMonth: number;
+  availableHoursPerFte: number;
+  baseRequiredFte: number;
+  requiredHeadcount: number;
+  currentFte: number;
+  gap: number; // currentFte - requiredHeadcount
+  shortage: number;
+  surplus: number;
+  status: StaffingStatus;
+}
+
+// ---------------------------------------------------------------------------
 // Physicians Workforce Planning
 // ---------------------------------------------------------------------------
 

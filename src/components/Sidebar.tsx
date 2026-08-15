@@ -11,6 +11,7 @@ import {
   Building2,
   FileText,
   Activity,
+  Calculator,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -35,6 +36,7 @@ const PRIMARY: NavItem[] = [
 
 // Supporting nursing tools carried over from the existing MVP.
 const SECONDARY: NavItem[] = [
+  { to: '/nurse-calculator', label: 'Nurse Calculator', icon: Calculator },
   { to: '/nurses-dashboard', label: 'Nursing Dashboard', icon: Activity },
   { to: '/departments', label: 'Departments', icon: Building2 },
   { to: '/reports', label: 'Reports', icon: FileText },

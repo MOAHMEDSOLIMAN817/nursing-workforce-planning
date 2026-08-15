@@ -23,10 +23,16 @@ export interface PhysicianAssumptions {
   availableHoursPerFteMonth: number;
 }
 
-export function determinePhysicianStatus(gap: number): StaffingStatus {
+// Shared gap → status classification, reused by every workforce engine.
+export function statusFromGap(gap: number): StaffingStatus {
   if (gap < 0) return 'SHORTAGE';
   if (gap > 0) return 'SURPLUS';
   return 'BALANCED';
+}
+
+// Backwards-compatible alias kept for the physician engine and its tests.
+export function determinePhysicianStatus(gap: number): StaffingStatus {
+  return statusFromGap(gap);
 }
 
 export function calcPhysicianUnit(

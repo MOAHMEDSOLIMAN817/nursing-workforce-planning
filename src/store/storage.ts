@@ -1,7 +1,14 @@
 // Simple persistent store backed by localStorage. Appropriate for an MVP —
 // no backend required, data survives reloads.
 
-import type { Department, PhysicianUnit, PlanningRecord, Settings } from '../lib/types';
+import type {
+  Department,
+  NurseUnit,
+  NurseUnitType,
+  PhysicianUnit,
+  PlanningRecord,
+  Settings,
+} from '../lib/types';
 import { uid } from '../lib/format';
 
 const KEYS = {
@@ -9,6 +16,7 @@ const KEYS = {
   departments: 'nwp.departments.v1',
   records: 'nwp.records.v1',
   physicianUnits: 'nwp.physicianUnits.v1',
+  nurseUnits: 'nwp.nurseUnits.v1',
 } as const;
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -69,6 +77,95 @@ export const SEED_PHYSICIAN_UNITS: PhysicianUnit[] = PHYS_UNIT_NAMES.map((name) 
     : { id: uid(), unit: name, beds: 0, occupancyRate: 0, staffingRatio: 10, currentFte: 0 },
 );
 
+// Nursing demo units. Current FTE is 0 for every unit — the hospital enters
+// real staffing later (and Excel import will follow). Each unit carries its own
+// configurable staffing ratio; ratios are never hardcoded in the calculator.
+// PICU / NICU / Intermediate Care / 1st Floor NS1 seed the specification's
+// worked examples so the engine can be validated on first load.
+type InpatientSeed = [name: string, type: NurseUnitType, ratio: number, beds: number, occ: number];
+type ClinicSeed = [name: string, type: NurseUnitType];
+
+const INPATIENT_SEEDS: InpatientSeed[] = [
+  ['PICU - NU', 'Critical Care', 2, 22, 55],
+  ['NICU - NU', 'Critical Care', 2, 47, 75],
+  ['NICU ISO - NU', 'Critical Care', 2, 0, 0],
+  ['ICU - NU', 'Critical Care', 2, 0, 0],
+  ['ICUG - NU', 'Critical Care', 2, 0, 0],
+  ['Intermediate Care - NU', 'Inpatient Ward', 3, 24, 88],
+  ['CCU - NU', 'Critical Care', 2, 0, 0],
+  ['Stroke Unit', 'Critical Care', 2, 0, 0],
+  ['1st Floor NS1', 'Inpatient Ward', 5, 21, 38],
+  ['2nd Floor NS1', 'Inpatient Ward', 5, 0, 0],
+  ['2nd Floor NS2', 'Inpatient Ward', 5, 0, 0],
+  ['3rd Floor NS1', 'Inpatient Ward', 5, 0, 0],
+  ['3rd Floor NS2', 'Inpatient Ward', 5, 0, 0],
+  ['3rd Floor NS3', 'Inpatient Ward', 5, 0, 0],
+  ['Delivery Room - NU', 'Delivery Room', 2, 0, 0],
+];
+
+const CLINIC_SEEDS: ClinicSeed[] = [
+  ['Anesthesia - NU', 'Procedure Unit'],
+  ['Cardiology - NU', 'Clinic'],
+  ['Cath Lab - NU', 'Procedure Unit'],
+  ['Dental - NU', 'Clinic'],
+  ['Dermatology - NU', 'Clinic'],
+  ['Endoscopy - NU', 'Procedure Unit'],
+  ['ENT/Otorhinolaryngology - NU', 'Clinic'],
+  ['ER - NU', 'Emergency'],
+  ['Family Medicine - NU', 'Clinic'],
+  ['General Surgery - NU', 'Clinic'],
+  ['IMU/LTU', 'Other'],
+  ['Internal Medicine - NU', 'Clinic'],
+  ['Interventional Radiology - NU', 'Procedure Unit'],
+  ['Nephrology and Hemodialysis - NU', 'Procedure Unit'],
+  ['Neurology - NU', 'Clinic'],
+  ['Neurosurgery - NU', 'Clinic'],
+  ['OB & Gyne Clinic - NU', 'Clinic'],
+  ['OB/GYN - NU', 'Clinic'],
+  ['Oncology - NU', 'Clinic'],
+  ['Ophthalmology - NU', 'Clinic'],
+  ['OR - NU', 'Operating Room'],
+  ['Orthopedics - NU', 'Clinic'],
+  ['Outpatient - NU', 'Clinic'],
+  ['Pediatrics - NU', 'Clinic'],
+  ['Psychiatry - NU', 'Clinic'],
+  ['Recovery Room - NU', 'Procedure Unit'],
+  ['Urology - NU', 'Clinic'],
+];
+
+function baseNurseUnit(): Omit<NurseUnit, 'id' | 'unit' | 'unitType' | 'model'> {
+  return {
+    beds: 0,
+    occupancyRate: 0,
+    staffingRatio: 2,
+    clinics: 0,
+    nursesPerClinic: 1,
+    operatingHoursPerDay: 10,
+    clinicWorkingDays: 26,
+    currentFte: 0,
+  };
+}
+
+export const SEED_NURSE_UNITS: NurseUnit[] = [
+  ...INPATIENT_SEEDS.map(([unit, unitType, staffingRatio, beds, occupancyRate]) => ({
+    ...baseNurseUnit(),
+    id: uid(),
+    unit,
+    unitType,
+    model: 'Inpatient' as const,
+    staffingRatio,
+    beds,
+    occupancyRate,
+  })),
+  ...CLINIC_SEEDS.map(([unit, unitType]) => ({
+    ...baseNurseUnit(),
+    id: uid(),
+    unit,
+    unitType,
+    model: 'Clinic' as const,
+  })),
+];
+
 function read<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(key);
@@ -119,4 +216,15 @@ export function loadPhysicianUnits(): PhysicianUnit[] {
 }
 export function savePhysicianUnits(list: PhysicianUnit[]): void {
   write(KEYS.physicianUnits, list);
+}
+
+// ---- Nurse units ----
+export function loadNurseUnits(): NurseUnit[] {
+  const existing = read<NurseUnit[] | null>(KEYS.nurseUnits, null);
+  if (existing && existing.length) return existing;
+  write(KEYS.nurseUnits, SEED_NURSE_UNITS);
+  return SEED_NURSE_UNITS;
+}
+export function saveNurseUnits(list: NurseUnit[]): void {
+  write(KEYS.nurseUnits, list);
 }
