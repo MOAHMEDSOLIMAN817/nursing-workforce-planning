@@ -202,7 +202,8 @@ function FilterSelect({
       >
         {options.map((o) => (
           <option key={o} value={o}>
-            {o === 'ALL' ? 'All' : o.charAt(0) + o.slice(1).toLowerCase()}
+            {/* Prettify ALL-CAPS enum values (statuses); leave proper names as-is. */}
+            {o === 'ALL' ? 'All' : o === o.toUpperCase() ? o.charAt(0) + o.slice(1).toLowerCase() : o}
           </option>
         ))}
       </select>
