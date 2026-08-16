@@ -90,6 +90,44 @@ export interface CalcResult {
 }
 
 // ---------------------------------------------------------------------------
+// Centralized Department / Unit configuration (single source of truth)
+// ---------------------------------------------------------------------------
+
+// Which workforces an operational unit is staffed for.
+export type WorkforceCoverage = 'Nurses' | 'Physicians' | 'Both';
+
+export type UnitStatus = 'Active' | 'Inactive';
+
+// The ONE record type that every module derives from. A stable `id` is the
+// primary key — never the display name. Per-workforce staffing ratio and Current
+// FTE live here so physicians and nurses of the same unit never share a number.
+export interface UnitConfig {
+  id: string;
+  name: string;
+  unitType: NurseUnitType;
+  model: NurseUnitModel; // Inpatient (bed occupancy) | Clinic (session hours)
+  status: UnitStatus;
+  workforceType: WorkforceCoverage; // Nurses | Physicians | Both
+
+  // Shared demand inputs
+  beds: number;
+  occupancyRate: number; // %
+  clinics: number; // clinic model
+  nursesPerClinic: number; // clinic model
+
+  // Time assumptions (per unit). Inpatient calc uses the global assumptions;
+  // for clinics, coverageHours is the operating hours/day.
+  coverageHours: number;
+  workingDaysPerMonth: number; // clinic working days/month
+
+  // Per-workforce staffing (single source of truth for Current FTE)
+  physicianRatio: number; // patients per physician
+  physicianCurrentFte: number;
+  nurseRatio: number; // patients per nurse
+  nurseCurrentFte: number;
+}
+
+// ---------------------------------------------------------------------------
 // Nurses Workforce Planning
 // ---------------------------------------------------------------------------
 

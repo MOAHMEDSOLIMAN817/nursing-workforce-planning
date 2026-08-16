@@ -8,9 +8,11 @@ import type {
   PhysicianUnit,
   PlanningRecord,
   Settings,
+  UnitConfig,
   UnitMapping,
 } from '../lib/types';
 import { uid } from '../lib/format';
+import { departmentToConfig, nurseUnitToConfig, physicianUnitToConfig } from '../lib/units';
 
 const KEYS = {
   settings: 'nwp.settings.v1',
@@ -19,6 +21,7 @@ const KEYS = {
   physicianUnits: 'nwp.physicianUnits.v1',
   nurseUnits: 'nwp.nurseUnits.v1',
   unitMappings: 'nwp.unitMappings.v1',
+  units: 'nwp.units.v1',
 } as const;
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -237,4 +240,55 @@ export function loadUnitMappings(): UnitMapping[] {
 }
 export function saveUnitMappings(list: UnitMapping[]): void {
   write(KEYS.unitMappings, list);
+}
+
+// ---- Central units (single source of truth) ------------------------------
+
+// Fresh-install seed: the combined nurse + physician demo units as UnitConfig.
+export function buildSeedUnits(): UnitConfig[] {
+  return [
+    ...SEED_NURSE_UNITS.map(nurseUnitToConfig),
+    ...SEED_PHYSICIAN_UNITS.map(physicianUnitToConfig),
+  ];
+}
+
+// Build the central store once, from whatever data already exists in
+// localStorage, WITHOUT wiping anything. Existing physician units, nurse units
+// and any user-added department (e.g. "VIP") are preserved with stable IDs.
+function migrateToUnits(): UnitConfig[] {
+  const oldPhys = read<PhysicianUnit[] | null>(KEYS.physicianUnits, null);
+  const oldNurse = read<NurseUnit[] | null>(KEYS.nurseUnits, null);
+  const oldDepts = read<Department[] | null>(KEYS.departments, null) ?? [];
+
+  const physSource = oldPhys && oldPhys.length ? oldPhys : SEED_PHYSICIAN_UNITS;
+  const nurseSource = oldNurse && oldNurse.length ? oldNurse : SEED_NURSE_UNITS;
+
+  const units: UnitConfig[] = [
+    ...nurseSource.map(nurseUnitToConfig),
+    ...physSource.map(physicianUnitToConfig),
+  ];
+
+  // Import user-added departments that aren't seeds and aren't already units
+  // (this is how a manually-added "VIP" survives migration).
+  const seedDeptNames = new Set(SEED_DEPARTMENTS.map((d) => d.name.trim().toLowerCase()));
+  const taken = new Set(units.map((u) => u.name.trim().toLowerCase()));
+  for (const d of oldDepts) {
+    const nm = d.name.trim().toLowerCase();
+    if (!nm || seedDeptNames.has(nm) || taken.has(nm)) continue;
+    units.push(departmentToConfig(d, uid()));
+    taken.add(nm);
+  }
+  return units;
+}
+
+export function loadUnits(): UnitConfig[] {
+  const existing = read<UnitConfig[] | null>(KEYS.units, null);
+  if (existing && existing.length) return existing;
+  const migrated = migrateToUnits();
+  write(KEYS.units, migrated);
+  return migrated;
+}
+
+export function saveUnits(list: UnitConfig[]): void {
+  write(KEYS.units, list);
 }
