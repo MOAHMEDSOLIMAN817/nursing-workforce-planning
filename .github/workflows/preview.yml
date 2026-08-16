@@ -1,0 +1,49 @@
+name: Preview build (branch artifact)
+
+# Builds a preview of a feature branch as a SEPARATE downloadable artifact.
+# It deliberately does NOT deploy to GitHub Pages and requests only read
+# permissions, so the production deployment from `main` is never touched.
+on:
+  push:
+    branches: [fix/centralized-department-sync]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Keep preview runs independent of the production Pages deployment.
+concurrency:
+  group: preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build preview (separate /preview/ base path)
+        run: npm run build -- --base=/nursing-workforce-planning/preview/
+
+      - name: Add SPA 404 fallback
+        run: cp dist/index.html dist/404.html
+
+      - name: Upload preview artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-fix-centralized-department-sync
+          path: dist
+          retention-days: 14
