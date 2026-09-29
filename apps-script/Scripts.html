@@ -510,8 +510,8 @@
     if (el.hasAttribute('data-u')) {
       var u = unit(el.getAttribute('data-u')), path = el.getAttribute('data-f');
       if (!u) return;
-      setPath(u, path, val);
-      if (path === 'method') { ensureParams(u); rr = true; }
+      if (path === 'method') { C.switchMethod(u, val); rr = true; }
+      else setPath(u, path, val);
       Array.prototype.forEach.call(document.querySelectorAll('[data-u="' + u.id + '"][data-f="' + path + '"]'), function (x) {
         if (x !== el && x.type !== 'checkbox') x.value = val;
       });

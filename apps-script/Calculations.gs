@@ -958,8 +958,27 @@ function NWC_ENGINE_FACTORY_() {
     return p;
   }
 
+  /**
+   * Switch a unit's workload method. Inputs of the previous method are kept
+   * (so switching back loses nothing); fields with the same key (e.g. beds)
+   * are copied into the new method only where the new method's value is blank.
+   */
+  function switchMethod(u, method) {
+    var old = u.method;
+    u.params = u.params || {};
+    if (!u.params[method]) u.params[method] = blankParams(method);
+    var from = u.params[old] || {}, to = u.params[method], def = METHODS[method];
+    if (def && old !== method) {
+      def.fields.forEach(function (f) {
+        if (f.key in from && isBlank(to[f.key]) && !isBlank(from[f.key])) to[f.key] = from[f.key];
+      });
+    }
+    u.method = method;
+    return u;
+  }
+
   return {
-    VERSION: VERSION, STATUS: STATUS, METHODS: METHODS, SETTINGS_FIELDS: SETTINGS_FIELDS,
+    VERSION: VERSION, switchMethod: switchMethod, STATUS: STATUS, METHODS: METHODS, SETTINGS_FIELDS: SETTINGS_FIELDS,
     NON_FRIDAY_DAYS: NON_FRIDAY_DAYS, RELATION_TYPES: RELATION_TYPES, RELATION_RESOLUTIONS: RELATION_RESOLUTIONS,
     calculate: calculate, monthInfo: monthInfo, hoursModel: hoursModel, scheduleHours: scheduleHours,
     defaultSettings: defaultSettings, normalizeSettings: normalizeSettings, newUnit: newUnit, blankParams: blankParams,

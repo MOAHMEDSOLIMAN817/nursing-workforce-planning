@@ -136,6 +136,14 @@ provisional. A **Manual Override** needs a reason; its hours = FTE × hours per 
   load order is not guaranteed.
 - ID, month and day-list columns use the `@` text format, so Sheets does not
   coerce them. Dates found in text cells are converted back to `yyyy-MM`.
-- Tests: `tests/engine.test.cjs` (31), `tests/server.test.cjs` (10),
-  `tests/ui-smoke.cjs` (browser end-to-end using the real `.gs` files on an
+- Functions called from menus or `google.script.run` must NOT end in `_`
+  (Apps Script makes those private). `tests/gas-compat.test.cjs` enforces this.
+- Changing a unit's method goes through `NwcCalc.switchMethod`. It keeps the
+  previous method's inputs and copies same-named blank fields (for example beds).
+- Web-app access defaults to `MYSELF`, because `DOMAIN` is invalid for
+  consumer Gmail accounts. Widen access at deployment time.
+- Tests: `tests/engine.test.cjs` (32), `tests/server.test.cjs` (10),
+  `tests/gas-compat.test.cjs` (12: private functions, load order, RPC-safe
+  values, manifest, scriptlets, storage preservation), and
+  `tests/ui-smoke.cjs` (39 browser checks running the real `.gs` files against an
   in-memory sheet mock).

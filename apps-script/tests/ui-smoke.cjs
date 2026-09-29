@@ -161,6 +161,69 @@ function check(cond, msg) { if (!cond) throw new Error('FAIL: ' + msg); console.
   check(saved.transfers.length === 1 && saved.units.find(u => u.id === 'U-CATH').archived === true, 'transfer and archive persisted');
   await shot('5-summary-after');
 
+  console.log('Inpatient: acuity groups');
+  await page.click('#tabs button[data-page="inpatient"]');
+  await page.selectOption('#page-inpatient tbody select[data-u="U-CCU"][data-f="method"]', 'ACUITY');
+  await page.click('[data-act="select"][data-id="U-CCU"]');
+  check(/Data Required/.test(await page.textContent('#page-inpatient td[data-o="u|U-CCU|status"]')), 'acuity mode without groups is Data Required');
+  for (const [name, pts, ratio] of [['Ventilated', '2', '1'], ['Standard', '2', '2']]) {
+    await page.click('[data-act="add-row"][data-id="U-CCU"][data-tk="groups"]');
+    const i = await page.evaluate(() => NwcApp.state.units.find(u => u.id === 'U-CCU').params.ACUITY.groups.length - 1);
+    await page.fill(`input[data-u="U-CCU"][data-f="params.ACUITY.groups.${i}.name"]`, name);
+    await page.fill(`input[data-u="U-CCU"][data-f="params.ACUITY.groups.${i}.patients"]`, pts);
+    await page.fill(`input[data-u="U-CCU"][data-f="params.ACUITY.groups.${i}.patientsPerRN"]`, ratio);
+  }
+  check((await page.textContent('#page-inpatient td[data-o="u|U-CCU|avgConcurrentRN"]')).trim() === '3', 'acuity groups: 2÷1 + 2÷2 = 3 RN');
+  await page.fill('input[data-u="U-CCU"][data-f="params.ACUITY.groups.1.name"]', 'ventilated');
+  check((await page.textContent('#banners')).includes('mutually exclusive'), 'overlapping group names flagged');
+  await page.fill('input[data-u="U-CCU"][data-f="params.ACUITY.groups.1.name"]', 'Standard');
+
+  console.log('Duplicate unit name blocked');
+  await page.fill('#page-inpatient tbody input[data-u="U-STROKE"][data-f="name"]', 'ccu');
+  check((await page.textContent('#banners')).includes('Duplicate unit name'), 'duplicate name error shown');
+  await page.fill('#page-inpatient tbody input[data-u="U-STROKE"][data-f="name"]', 'Stroke Unit');
+
+  console.log('ER: period/acuity rows with confirmed removal');
+  await page.click('#tabs button[data-page="other"]');
+  await page.click('[data-act="select"][data-id="U-ER"]');
+  const erRows = () => page.evaluate(() => NwcApp.state.units.find(u => u.id === 'U-ER').params.ER.workload.length);
+  const n0 = await erRows();
+  await page.click('[data-act="del-row"][data-id="U-ER"][data-tk="workload"][data-i="0"]');
+  await page.click('#modalCancel');
+  check(await erRows() === n0, 'cancelling removal keeps the row');
+  await page.click('[data-act="del-row"][data-id="U-ER"][data-tk="workload"][data-i="0"]');
+  await page.click('#modalOk');
+  check(await erRows() === n0 - 1, 'confirmed removal deletes the row');
+
+  console.log('Settings: CNC contribution and restore');
+  await page.click('#tabs button[data-page="settings"]');
+  await page.click('[data-act="add-cnc"]');
+  await page.fill('input[data-cnc="0"][data-f="cncRef"]', 'CNC-01');
+  await page.selectOption('select[data-cnc="0"][data-f="unitId"]', 'U-W3-NS1');
+  await page.fill('input[data-cnc="0"][data-f="totalHours"]', '175');
+  await page.fill('input[data-cnc="0"][data-f="adminHours"]', '100');
+  await page.fill('input[data-cnc="0"][data-f="directCareHours"]', '60');
+  check((await page.textContent('td[data-region="cnc"][data-arg="0"]')).includes('Not credited'), 'CNC not credited until qualification confirmed');
+  await page.check('input[data-cnc="0"][data-f="qualified"]');
+  check((await page.textContent('td[data-region="cnc"][data-arg="0"]')).includes('60 h'), 'qualified CNC credited 60 direct-care hours');
+  await page.fill('input[data-cnc="0"][data-f="adminHours"]', '130');
+  check((await page.textContent('#banners')).includes('exceed total hours'), 'direct + admin > total flagged');
+  await page.fill('input[data-cnc="0"][data-f="adminHours"]', '100');
+  await page.click('[data-act="restore"][data-id="U-CATH"]');
+  check(await page.evaluate(() => NwcApp.state.units.find(u => u.id === 'U-CATH').archived === false), 'archived unit restored');
+  await page.click('#btnSave');
+  await page.waitForFunction(() => document.getElementById('savePill').textContent === 'All changes saved');
+  const st2 = gas.getAppData().state;
+  check(st2.cncContributions.length === 1 && st2.units.find(u => u.id === 'U-CCU').method === 'ACUITY' && !st2.units.find(u => u.id === 'U-CATH').archived,
+    'CNC row, acuity groups and restore persisted');
+  const w = gas.NwcCalc.calculate(st2).units.find(u => u.id === 'U-W3-NS1');
+  check(w.cncFTE > 0 && w.currentHC === 1, 'CNC adds FTE credit to the unit, not RN headcount');
+
+  console.log('Phone-width layout');
+  await page.setViewportSize({ width: 390, height: 800 });
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  check(overflow <= 1, 'no horizontal page scroll at 390px (tables scroll inside their frame)');
+
   check(pageErrors.length === 0, 'no browser console errors' + (pageErrors.length ? ': ' + pageErrors.join(' | ') : ''));
   await browser.close();
   console.log('UI smoke test passed');

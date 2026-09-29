@@ -10,7 +10,7 @@
     "lint": "tsc --noEmit",
     "test": "vitest run && npm run test:gas",
     "test:watch": "vitest",
-    "test:gas": "node --test apps-script/tests/engine.test.cjs apps-script/tests/server.test.cjs",
+    "test:gas": "node --test apps-script/tests/engine.test.cjs apps-script/tests/server.test.cjs apps-script/tests/gas-compat.test.cjs",
     "test:ui": "node apps-script/tests/ui-smoke.cjs"
   },
   "dependencies": {

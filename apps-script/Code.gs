@@ -18,7 +18,7 @@ function doGet() {
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('Nursing Workforce')
     .addItem('Open calculator', 'openCalculatorDialog')
-    .addItem('Initialise / repair sheets', 'menuInitialize_')
+    .addItem('Initialise / repair sheets', 'menuInitialize')
     .addItem('Refresh Results sheet', 'refreshResultsSheet')
     .addToUi();
 }
@@ -31,7 +31,7 @@ function openCalculatorDialog() {
   SpreadsheetApp.getUi().showModelessDialog(html, APP_CONFIG.APP_TITLE);
 }
 
-function menuInitialize_() {
+function menuInitialize() {
   var msg = initializeSystem();
   SpreadsheetApp.getUi().alert(msg);
 }

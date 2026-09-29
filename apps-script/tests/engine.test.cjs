@@ -438,3 +438,14 @@ test('rounding: exact multiples do not round up an extra post', () => {
   assert.equal(w.requiredFTE, 31);
   assert.equal(w.establishment, 31);
 });
+
+test('switching method carries shared inputs (beds) and keeps the old method inputs', () => {
+  const u = ward('W');
+  C.switchMethod(u, 'ACUITY');
+  assert.equal(u.method, 'ACUITY');
+  assert.equal(u.params.ACUITY.beds, 20, 'beds carried over');
+  assert.equal(u.params.RATIO.occupancyPct, 80, 'ratio inputs kept');
+  u.params.ACUITY.beds = 18;
+  C.switchMethod(u, 'RATIO');
+  assert.equal(u.params.RATIO.beds, 20, 'existing value not overwritten');
+});

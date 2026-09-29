@@ -21,19 +21,50 @@ Excel-like tables. Numbers update as you type, and Save writes them to the sheet
 | `appsscript.json` | Manifest (V8, scopes, web-app settings). |
 | `tests/` | Node tests with an in-memory Apps Script mock, plus a Playwright UI smoke test. Excluded from `clasp push`. |
 
-## Deploy
+## Deploy (step by step)
 
-1. Create a Google Sheet, then open **Extensions → Apps Script**.
-2. Copy each `.gs`/`.html` file into the project under the same name, and replace
-   `appsscript.json` (turn on *Project Settings → Show "appsscript.json"*).
-   Or use clasp: copy `.clasp.json.example` to `.clasp.json`, set the script ID,
-   and run `clasp push` from this folder.
-3. Run `initializeSystem` once from the editor and grant the permissions.
-   This creates the sheets and seeds the 25 workbook units. Running it again
-   only adds missing sheets, columns or settings. It never overwrites saved data.
-4. Reload the Sheet. Open the app with **Nursing Workforce → Open calculator**, or
-   use **Deploy → New deployment → Web app**. The manifest sets
-   *Execute as: me* and *Access: my domain*; change these to fit your policy.
+**A. Create the Sheet and the script project**
+1. Go to <https://sheets.new>. Name the new spreadsheet, for example *Nursing Workforce Calculator*.
+2. In the Sheet, click **Extensions → Apps Script**. This opens a script project bound to the Sheet.
+3. Rename the project (top left) to *Nursing Workforce Calculator*.
+
+**B. Add the files** (manual copy; the clasp alternative is in step 7)
+
+4. Click the gear icon (**Project Settings**) and tick **Show "appsscript.json" manifest file in editor**.
+5. Go back to the **Editor**. Delete the default contents of `Code.gs` and paste this repo's `Code.gs`.
+6. For each remaining file, click **+ → Script** or **+ → HTML** and enter the name **without the extension**. Then paste the contents:
+   - Scripts: `Config`, `Calculations`, `Setup`
+   - HTML: `Index`, `Styles`, `Scripts`
+   - Replace the contents of `appsscript.json` with this repo's version.
+
+   Save all files (Ctrl/Cmd + S). File order does not matter.
+7. *Alternative:* install clasp (`npm i -g @google/clasp`) and run `clasp login`. Copy
+   `.clasp.json.example` to `.clasp.json`, set `scriptId` (found under Project Settings → IDs), then run
+   `clasp push` from this folder. Test files and Markdown files are excluded by `.claspignore`.
+
+**C. Initialise**
+
+8. In the editor, choose `initializeSystem` in the function drop-down and click **Run**.
+9. Authorise when prompted: **Review permissions →** choose your account **→ Advanced → Go to …
+   (unsafe) → Allow**. Google shows the "unsafe" warning for any unverified personal script.
+10. Check the **Execution log**. It should list the sheets it created and end with *Seeded 25 units from the workbook*.
+    Running it again should report *System already initialised — nothing changed.*
+
+**D. Open the calculator**
+
+11. Reload the Sheet tab. A **Nursing Workforce** menu appears (it may take a few seconds).
+    Choose **Nursing Workforce → Open calculator** to open the app in a dialog.
+12. Optional full-page web app: in the editor click **Deploy → New deployment**, then the gear icon **→ Web app**.
+    Set *Execute as* **Me** and *Who has access* **Only myself**. Click **Deploy** and open the **Web app URL**.
+    To share it, change the access setting and share the Sheet with the colleagues who need it.
+    After you change the code later, update the deployment with **Deploy → Manage deployments → Edit → New version**.
+
+**E. First checks in Google** (these cannot be tested outside Google)
+
+13. Edit an input, click **Save**, reopen the calculator, and confirm the value persisted. Also confirm the `Units`,
+    `Results` and `Audit_Log` sheets updated.
+14. Run **Nursing Workforce → Initialise / repair sheets** and confirm it reports *nothing changed*.
+15. On the **Settings** sheet tab, check that `reportingMonth` still shows `YYYY-MM` text and has not been converted to a date.
 
 ## Use
 
@@ -59,8 +90,8 @@ Excel-like tables. Numbers update as you type, and Save writes them to the sheet
 ## Tests
 
 ```bash
-npm run test:gas   # engine + server tests (node:test), also run by `npm test`
-npm run test:ui    # browser end-to-end smoke test (needs Playwright/Chromium)
+npm run test:gas   # 54 engine, server and Apps Script-compatibility tests (node:test); also run by `npm test`
+npm run test:ui    # browser end-to-end test (39 checks; needs Playwright/Chromium)
 ```
 
 See `PROJECT_MEMORY.md` for calculation definitions and design decisions.

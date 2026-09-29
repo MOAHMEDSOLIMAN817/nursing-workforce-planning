@@ -86,7 +86,7 @@ function createContext(opts) {
     }
   };
   vm.createContext(ctx);
-  GS_FILES.forEach(f => vm.runInContext(fs.readFileSync(path.join(ROOT, f), 'utf8'), ctx, { filename: f }));
+  ((opts && opts.fileOrder) || GS_FILES).forEach(f => vm.runInContext(fs.readFileSync(path.join(ROOT, f), 'utf8'), ctx, { filename: f }));
   ctx.__ss = ss;
   return ctx;
 }
@@ -100,4 +100,4 @@ function loadEngine() {
   return ctx;
 }
 
-module.exports = { createContext, loadEngine, MockSpreadsheet, ROOT };
+module.exports = { createContext, loadEngine, MockSpreadsheet, ROOT, GS_FILES };
