@@ -13,7 +13,7 @@ function initializeSystem() {
   var S = APP_CONFIG.SHEETS;
   PropertiesService.getScriptProperties().setProperty('SPREADSHEET_ID', ss.getId());
 
-  [S.SETTINGS, S.UNITS, S.TRANSFERS, S.CNC, S.AUDIT, S.META].forEach(function (name) {
+  [S.SETTINGS, S.UNITS, S.TRANSFERS, S.CONTRIB, S.AUDIT, S.META].forEach(function (name) {
     var created = ensureSheet_(ss, name);
     var added = ensureHeaders_(ss.getSheetByName(name), APP_CONFIG.COLUMNS[name]);
     if (created) report.push('Created sheet ' + name);
@@ -48,7 +48,10 @@ function initializeSystem() {
     setMeta_('seeded_at', new Date().toISOString());
   }
   if (!meta.revision) setMeta_('revision', '1');
-  if (!meta.schema_version) setMeta_('schema_version', String(APP_CONFIG.SCHEMA_VERSION));
+  if (Number(meta.schema_version || 0) < APP_CONFIG.SCHEMA_VERSION) {
+    migrateToV2_().forEach(function (m) { report.push(m); });
+    setMeta_('schema_version', String(APP_CONFIG.SCHEMA_VERSION));
+  }
 
   if (report.length) appendAudit_('initializeSystem', report.join('; '));
   var msg = report.length ? report.join('\n') : 'System already initialised — nothing changed.';
@@ -59,7 +62,41 @@ function initializeSystem() {
 function ensureInitialized_() {
   var ss = getSpreadsheet_();
   var meta = ss.getSheetByName(APP_CONFIG.SHEETS.META);
-  if (!meta || !readMeta_().seeded) initializeSystem();
+  if (!meta) { initializeSystem(); return; }
+  var m = readMeta_();
+  if (!m.seeded || Number(m.schema_version || 0) < APP_CONFIG.SCHEMA_VERSION) initializeSystem();
+}
+
+/**
+ * Version 1 → 2. Adds unit types and converts hours-based CNC rows into
+ * FTE allocations. Saved inputs are never overwritten; the v1 sheet is left
+ * in place (read-only) for audit.
+ */
+function migrateToV2_() {
+  var out = [];
+  var units = readUnits_();
+  var typed = 0;
+  units.forEach(function (u) { if (!u.unitType) { u.unitType = NwcCalc.unitTypeOf(u); typed++; } });
+  if (typed) { writeUnits_(units, 'migration', {}); out.push('Assigned unit types to ' + typed + ' unit(s)'); }
+
+  var legacy = readTable_(APP_CONFIG.SHEETS.LEGACY_CNC).rows.filter(function (r) { return r.contribution_id !== ''; });
+  if (legacy.length && !readContributions_().length) {
+    var settings = readSettings_();
+    var hpf = NwcCalc.hoursModel(settings, NwcCalc.monthInfo(settings.reportingMonth)).hoursPerFTE;
+    var rows = legacy.map(function (r) {
+      var dc = Number(r.direct_care_hours) || 0, adm = Number(r.admin_hours) || 0;
+      var total = Number(r.total_hours) || (dc + adm);
+      return {
+        id: String(r.contribution_id), category: 'CNC', staffRef: cellStr_(r.cnc_ref), unitId: cellStr_(r.unit_id),
+        allocatedFTE: hpf && total ? Math.min(1, total / hpf) : '', contributionPct: total ? dc / total * 100 : '',
+        approved: cellBool_(r.qualified), countedInRNFTE: false,
+        notes: 'Migrated from v1: ' + total + ' h total, ' + dc + ' h direct care, ' + adm + ' h admin. ' + cellStr_(r.notes)
+      };
+    });
+    writeContributions_(rows);
+    out.push('Migrated ' + rows.length + ' CNC row(s) from CNC_Contributions to Contributions');
+  }
+  return out;
 }
 
 function getSpreadsheet_() {
@@ -109,7 +146,7 @@ function applyTextFormats_(ss) {
     Settings: ['key', 'value'],
     Units: ['unit_id', 'open_days', 'related_unit_id', 'params_json'],
     Transfers: ['transfer_id', 'source_unit_id', 'dest_unit_id'],
-    CNC_Contributions: ['contribution_id', 'cnc_ref', 'unit_id']
+    Contributions: ['allocation_id', 'staff_ref', 'unit_id']
   };
   Object.keys(textCols).forEach(function (name) {
     var sh = ss.getSheetByName(name); if (!sh) return;
@@ -256,7 +293,7 @@ function unitFromRow_(r) {
   var params = {};
   try { params = r.params_json ? JSON.parse(String(r.params_json)) : {}; } catch (e) { params = {}; }
   return {
-    id: String(r.unit_id), name: cellStr_(r.name), section: cellStr_(r.section) === 'INPATIENT' ? 'INPATIENT' : 'OTHER',
+    id: String(r.unit_id), name: cellStr_(r.name), section: cellStr_(r.section) === 'INPATIENT' ? 'INPATIENT' : 'OTHER', unitType: cellStr_(r.unit_type),
     method: cellStr_(r.method), isOpen: r.is_open === '' ? true : cellBool_(r.is_open), archived: cellBool_(r.archived),
     sortOrder: cellNum_(r.sort_order),
     currentRNHeadcount: cellNum_(r.current_rn_hc), currentRNFTE: cellNum_(r.current_rn_fte), minRNPerShift: cellNum_(r.min_rn_per_shift),
@@ -271,7 +308,7 @@ function unitFromRow_(r) {
 function unitToRecord_(u, user, now) {
   var sch = u.schedule || {}, rel = u.relation || {};
   return {
-    unit_id: u.id, name: u.name, section: u.section, method: u.method, is_open: u.isOpen !== false, archived: !!u.archived,
+    unit_id: u.id, name: u.name, section: u.section, unit_type: u.unitType || NwcCalc.unitTypeOf(u), method: u.method, is_open: u.isOpen !== false, archived: !!u.archived,
     sort_order: u.sortOrder, current_rn_hc: u.currentRNHeadcount, current_rn_fte: u.currentRNFTE, min_rn_per_shift: u.minRNPerShift,
     weekday_hours: sch.weekdayHours, open_days: sch.openDays, friday_hours: sch.fridayHours, holiday_hours: sch.holidayHours,
     manual_override_fte: u.manualOverrideFTE, manual_override_reason: u.manualOverrideReason,
@@ -313,17 +350,18 @@ function writeTransfers_(list) {
   }), false);
 }
 
-function readCnc_() {
-  return readTable_(APP_CONFIG.SHEETS.CNC).rows.filter(function (r) { return r.contribution_id !== ''; }).map(function (r) {
-    return { id: String(r.contribution_id), cncRef: cellStr_(r.cnc_ref), unitId: cellStr_(r.unit_id), qualified: cellBool_(r.qualified),
-      totalHours: cellNum_(r.total_hours), adminHours: cellNum_(r.admin_hours), directCareHours: cellNum_(r.direct_care_hours), notes: cellStr_(r.notes) };
+function readContributions_() {
+  return readTable_(APP_CONFIG.SHEETS.CONTRIB).rows.filter(function (r) { return r.allocation_id !== ''; }).map(function (r) {
+    return { id: String(r.allocation_id), category: cellStr_(r.category) === 'PCA' ? 'PCA' : 'CNC', staffRef: cellStr_(r.staff_ref),
+      unitId: cellStr_(r.unit_id), allocatedFTE: cellNum_(r.allocated_fte), contributionPct: cellNum_(r.contribution_pct),
+      approved: cellBool_(r.approved), countedInRNFTE: cellBool_(r.counted_in_rn_fte), notes: cellStr_(r.notes) };
   });
 }
 
-function writeCnc_(list) {
+function writeContributions_(list) {
   var now = new Date();
-  writeTable_(APP_CONFIG.SHEETS.CNC, 'contribution_id', list.map(function (c) {
-    return { contribution_id: c.id, cnc_ref: c.cncRef, unit_id: c.unitId, qualified: !!c.qualified, total_hours: c.totalHours,
-      admin_hours: c.adminHours, direct_care_hours: c.directCareHours, notes: c.notes, updated_at: now };
+  writeTable_(APP_CONFIG.SHEETS.CONTRIB, 'allocation_id', list.map(function (c) {
+    return { allocation_id: c.id, category: c.category, staff_ref: c.staffRef, unit_id: c.unitId, allocated_fte: c.allocatedFTE,
+      contribution_pct: c.contributionPct, approved: !!c.approved, counted_in_rn_fte: !!c.countedInRNFTE, notes: c.notes, updated_at: now };
   }), false);
 }

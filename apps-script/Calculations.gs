@@ -9,6 +9,10 @@
  * Rules for this file:
  *   - Pure JavaScript only (no SpreadsheetApp, no DOM, no Date.now()).
  *   - Everything lives inside NWC_ENGINE_FACTORY_ so it can be serialised.
+ *   - Calculations keep full precision; only the UI rounds for display.
+ *
+ * Sign convention: gap = required FTE − available credited FTE.
+ *   positive = shortage, negative = surplus.
  *
  * All defaults are PLANNING ASSUMPTIONS requiring local approval. Nothing here
  * is a mandatory clinical standard.
@@ -16,7 +20,7 @@
 function NWC_ENGINE_FACTORY_() {
   'use strict';
 
-  var VERSION = '1.0.0';
+  var VERSION = '2.0.0';
   var EPS = 1e-9;
 
   var STATUS = {
@@ -52,46 +56,60 @@ function NWC_ENGINE_FACTORY_() {
       help: 'Sickness, meetings and other non-coverage time.' },
     { key: 'reliefUpliftPct', group: 'Hours per FTE', label: 'Relief uplift %', type: 'number', def: 15, min: 0, max: 200,
       help: 'Used only in "Relief uplift" mode.' },
+    { key: 'requirementBasis', group: 'Hours per FTE', label: 'Requirement basis', type: 'enum', def: 'AVERAGE', options: ['AVERAGE', 'WHOLE_SHIFT'],
+      help: 'Average workload FTE, or the FTE needed to staff whole nurses on every shift.' },
 
-    { key: 'otMaxHoursPerRN', group: 'Overtime', label: 'Maximum overtime hours per eligible RN per month', type: 'number', def: '', min: 0, optional: true,
-      help: 'Blank = Data Required. Feasible overtime is never assumed.' },
-    { key: 'otEligiblePct', group: 'Overtime', label: 'Share of current RN headcount eligible for overtime %', type: 'number', def: 100, min: 0, max: 100,
-      help: 'Used when a unit has no explicit eligible headcount.' },
+    { key: 'otMaxHoursPerRN', group: 'Overtime', label: 'Maximum overtime hours per eligible RN per month', type: 'number', def: 48, min: 0,
+      help: 'Hospital planning default of 48 h — a configurable assumption, not a policy.' },
+    { key: 'otEligiblePct', group: 'Overtime', label: 'Share of current RN headcount eligible for overtime %', type: 'number', def: '', min: 0, max: 100, optional: true,
+      help: 'Blank = eligibility not confirmed (feasible overtime shows Data Required). Units can override with an eligible headcount.' },
 
-    { key: 'pcaHeadcount', group: 'Support staff', label: 'PCA/PCT headcount', type: 'number', def: 54, min: 0, integer: true },
-    { key: 'pcaFTE', group: 'Support staff', label: 'PCA/PCT FTE (optional)', type: 'number', def: '', min: 0, optional: true },
-    { key: 'cncHeadcount', group: 'Support staff', label: 'CNC headcount', type: 'number', def: 35, min: 0, integer: true },
-    { key: 'cncFTE', group: 'Support staff', label: 'CNC FTE (optional)', type: 'number', def: '', min: 0, optional: true },
+    { key: 'cncHeadcount', group: 'Support staff & contributions', label: 'CNC headcount', type: 'number', def: 35, min: 0, integer: true },
+    { key: 'cncFTE', group: 'Support staff & contributions', label: 'CNC FTE available', type: 'number', def: 35, min: 0, optional: true,
+      help: 'Blank = equal to headcount. Unit allocations cannot exceed this.' },
+    { key: 'cncDirectCarePct', group: 'Support staff & contributions', label: 'Default CNC qualified direct-care % (after administrative duties)', type: 'number', def: 25, min: 0, max: 100,
+      help: 'Used when an allocation row has no own %. Planning assumption requiring approval.' },
+    { key: 'pcaHeadcount', group: 'Support staff & contributions', label: 'PCA/PCT headcount', type: 'number', def: 54, min: 0, integer: true },
+    { key: 'pcaFTE', group: 'Support staff & contributions', label: 'PCA/PCT FTE available', type: 'number', def: 54, min: 0, optional: true,
+      help: 'Blank = equal to headcount. Unit allocations cannot exceed this.' },
+    { key: 'pcaSubstitutionPct', group: 'Support staff & contributions', label: 'Default PCA/PCT approved support-task substitution %', type: 'number', def: 25, min: 0, max: 100,
+      help: 'Share of an allocated PCA/PCT FTE that substitutes locally approved support tasks. A PCA/PCT is never treated as a qualified RN.' },
+    { key: 'pcaMaxSharePct', group: 'Support staff & contributions', label: 'Maximum PCA/PCT credit as % of unit required FTE', type: 'number', def: 20, min: 0, max: 100,
+      help: 'Caps support-task substitution per unit.' },
+    { key: 'pcaAssumptionsApproved', group: 'Support staff & contributions', label: 'PCA/PCT and CNC contribution assumptions formally approved', type: 'enum', def: 'NO', options: ['NO', 'YES'],
+      help: 'Until YES, the adjusted workforce planning gap is labelled a planning scenario.' },
+    { key: 'pcaReducesRNWorkload', group: 'Support staff & contributions', label: 'Approved workload model removes PCA/PCT support-task hours from RN overtime need', type: 'enum', def: 'NO', options: ['NO', 'YES'],
+      help: 'Only YES when the approved model explicitly removes these hours. Otherwise PCA/PCT never covers qualified RN overtime gaps.' },
 
     { key: 'costRNMonthly', group: 'Costs (optional)', label: 'RN fully loaded monthly cost per FTE', type: 'number', def: '', min: 0, optional: true },
     { key: 'costCNCMonthly', group: 'Costs (optional)', label: 'CNC fully loaded monthly cost per FTE', type: 'number', def: '', min: 0, optional: true },
     { key: 'costPCAMonthly', group: 'Costs (optional)', label: 'PCA/PCT fully loaded monthly cost per FTE', type: 'number', def: '', min: 0, optional: true },
-    { key: 'costOTPerHour', group: 'Costs (optional)', label: 'Overtime cost per hour', type: 'number', def: '', min: 0, optional: true },
+    { key: 'costOTPerHour', group: 'Costs (optional)', label: 'Overtime cost per hour', type: 'number', def: '', min: 0, optional: true,
+      help: 'Blank = "Rate Required" for estimated overtime cost.' },
     { key: 'costTempPerHour', group: 'Costs (optional)', label: 'Temporary staff cost per hour', type: 'number', def: '', min: 0, optional: true },
     { key: 'costTransferPerFTE', group: 'Costs (optional)', label: 'Transfer one-off cost per FTE (orientation)', type: 'number', def: '', min: 0, optional: true },
     { key: 'currencyLabel', group: 'Costs (optional)', label: 'Currency label', type: 'text', def: 'SAR' }
   ];
 
   // ---------------------------------------------------------------------------
-  // Workload methods. Parameters are stored per method (unit.params[METHOD]) so
-  // switching method never loses the other method's inputs, and only the active
-  // method is ever calculated (no double counting of the same work).
+  // Workload methods. Parameters are stored per method (unit.params[METHOD]).
+  // Switching method never reinterprets another method's parameters.
   // ---------------------------------------------------------------------------
   var METHODS = {
     RATIO: {
-      label: 'Patient-to-RN ratio', section: 'INPATIENT',
+      label: 'Patient-to-RN ratio', section: 'INPATIENT', key: ['beds', 'occupancyPct', 'patientsPerRN'],
       fields: [
-        { key: 'beds', label: 'Operational beds', type: 'number', min: 0 },
-        { key: 'occupancyPct', label: 'Occupancy %', type: 'number', min: 0, max: 100 },
-        { key: 'patientsPerRN', label: 'Patients per RN', type: 'number', min: 0.01, positive: true },
+        { key: 'beds', label: 'Operational beds', short: 'Beds', type: 'number', min: 0 },
+        { key: 'occupancyPct', label: 'Occupancy %', short: 'Occ %', type: 'number', min: 0, max: 100 },
+        { key: 'patientsPerRN', label: 'Patients per RN', short: 'Pts/RN', type: 'number', min: 0.01, positive: true },
         { key: 'shiftCensus', label: 'Shift census (optional)', type: 'number', min: 0, optional: true,
           help: 'Actual or explicitly assumed census for whole-nurse shift staffing. Blank = rounded-up average occupied beds (assumption).' }
       ]
     },
     ACUITY: {
-      label: 'Acuity groups (advanced)', section: 'INPATIENT',
+      label: 'Acuity groups (advanced)', section: 'INPATIENT', key: ['beds'],
       fields: [
-        { key: 'beds', label: 'Operational beds', type: 'number', min: 0 }
+        { key: 'beds', label: 'Operational beds', short: 'Beds', type: 'number', min: 0 }
       ],
       tables: {
         groups: { label: 'Patient groups (mutually exclusive)', columns: [
@@ -102,10 +120,10 @@ function NWC_ENGINE_FACTORY_() {
       }
     },
     OR: {
-      label: 'Operating rooms', section: 'OTHER',
+      label: 'Operating rooms', section: 'OTHER', key: ['rooms', 'rnPerRoom'],
       fields: [
-        { key: 'rooms', label: 'Concurrent operating rooms', type: 'number', min: 0 },
-        { key: 'rnPerRoom', label: 'RN roles per room', type: 'number', min: 0,
+        { key: 'rooms', label: 'Concurrent operating rooms', short: 'Rooms', type: 'number', min: 0 },
+        { key: 'rnPerRoom', label: 'RN roles per room', short: 'RN/room', type: 'number', min: 0,
           help: 'e.g. scrub + circulating. Applied during the unit\'s staffed operating hours.' },
         { key: 'prepMinutesPerRoomDay', label: 'Extra preparation RN minutes per room per operating day', type: 'number', min: 0, optional: true },
         { key: 'prepIncluded', label: 'Preparation already included in room hours', type: 'bool' },
@@ -116,7 +134,7 @@ function NWC_ENGINE_FACTORY_() {
       ]
     },
     ER: {
-      label: 'Emergency volume × acuity', section: 'OTHER',
+      label: 'Emergency volume × acuity', section: 'OTHER', key: [],
       fields: [],
       tables: {
         periods: { label: 'Time periods (every calendar day)', columns: [
@@ -133,19 +151,19 @@ function NWC_ENGINE_FACTORY_() {
       }
     },
     DELIVERY: {
-      label: 'Delivery workload', section: 'OTHER',
+      label: 'Delivery workload', section: 'OTHER', key: ['deliveriesPerMonth', 'rnHoursPerDelivery'],
       fields: [
-        { key: 'deliveriesPerMonth', label: 'Deliveries per month', type: 'number', min: 0 },
-        { key: 'rnHoursPerDelivery', label: 'RN hours per delivery (incl. 1:1 active labour)', type: 'number', min: 0 },
+        { key: 'deliveriesPerMonth', label: 'Deliveries per month', short: 'Deliveries', type: 'number', min: 0 },
+        { key: 'rnHoursPerDelivery', label: 'RN hours per delivery (incl. 1:1 active labour)', short: 'RN h each', type: 'number', min: 0 },
         { key: 'otherCasesPerMonth', label: 'Other assessments per month (triage, observation)', type: 'number', min: 0, optional: true },
         { key: 'minutesPerOtherCase', label: 'RN minutes per other assessment', type: 'number', min: 0, optional: true }
       ]
     },
     PROCEDURE: {
-      label: 'Procedures (endoscopy / cathlab)', section: 'OTHER',
+      label: 'Procedures (endoscopy / cathlab)', section: 'OTHER', key: ['proceduresPerMonth', 'procedureMinutes'],
       fields: [
-        { key: 'proceduresPerMonth', label: 'Procedures per month', type: 'number', min: 0 },
-        { key: 'procedureMinutes', label: 'Average procedure minutes', type: 'number', min: 0 },
+        { key: 'proceduresPerMonth', label: 'Procedures per month', short: 'Procedures', type: 'number', min: 0 },
+        { key: 'procedureMinutes', label: 'Average procedure minutes', short: 'Minutes', type: 'number', min: 0 },
         { key: 'rnPerProcedure', label: 'RN roles per procedure', type: 'number', min: 0 },
         { key: 'prepMinutesPerProcedure', label: 'RN preparation/turnover minutes per procedure', type: 'number', min: 0, optional: true },
         { key: 'recoveryMinutesPerPatient', label: 'Recovery minutes per patient', type: 'number', min: 0, optional: true },
@@ -154,9 +172,9 @@ function NWC_ENGINE_FACTORY_() {
       ]
     },
     CSSD: {
-      label: 'CSSD (RN posts + technician workload)', section: 'OTHER',
+      label: 'CSSD (RN posts + technician workload)', section: 'OTHER', key: ['rnPosts'],
       fields: [
-        { key: 'rnPosts', label: 'RN posts during opening hours', type: 'number', min: 0,
+        { key: 'rnPosts', label: 'RN posts during opening hours', short: 'RN posts', type: 'number', min: 0,
           help: 'Supervision / infection-control RN posts. Technician processing work is NOT an RN requirement.' },
         { key: 'setsPerMonth', label: 'Instrument sets processed per month', type: 'number', min: 0, optional: true },
         { key: 'techMinutesPerSet', label: 'Technician minutes per set', type: 'number', min: 0, optional: true },
@@ -164,31 +182,46 @@ function NWC_ENGINE_FACTORY_() {
       ]
     },
     CLINIC: {
-      label: 'OPD A: clinic-based', section: 'OTHER',
+      label: 'Clinic-based (active clinics × RN per clinic)', section: 'OTHER', key: ['clinics', 'utilisationPct', 'rnPerClinic'],
       fields: [
-        { key: 'clinics', label: 'Clinic rooms', type: 'number', min: 0 },
-        { key: 'utilisationPct', label: 'Clinics active at the same time %', type: 'number', min: 0, max: 100 },
-        { key: 'rnPerClinic', label: 'RN per active clinic', type: 'number', min: 0 }
+        { key: 'clinics', label: 'Clinic rooms', short: 'Clinics', type: 'number', min: 0 },
+        { key: 'utilisationPct', label: 'Clinics active at the same time %', short: 'Active %', type: 'number', min: 0, max: 100 },
+        { key: 'rnPerClinic', label: 'RN per active clinic', short: 'RN/clinic', type: 'number', min: 0 }
       ]
     },
     ACTIVITY: {
-      label: 'OPD B: activity-based', section: 'OTHER',
+      label: 'Patient-volume-based (visits × RN minutes)', section: 'OTHER', key: ['activitiesPerMonth', 'minutesPerActivity'],
       fields: [
-        { key: 'activitiesPerMonth', label: 'Nursing activities / visits per month', type: 'number', min: 0 },
-        { key: 'minutesPerActivity', label: 'RN minutes per activity', type: 'number', min: 0 },
+        { key: 'activitiesPerMonth', label: 'Patient visits / nursing activities per month', short: 'Visits', type: 'number', min: 0 },
+        { key: 'minutesPerActivity', label: 'RN minutes per visit / activity', short: 'Min each', type: 'number', min: 0 },
         { key: 'supportHoursPerMonth', label: 'Additional uncovered support workload (hours/month)', type: 'number', min: 0, optional: true }
       ]
     },
     POSTS: {
-      label: 'Fixed RN posts', section: 'OTHER',
+      label: 'Fixed RN posts', section: 'OTHER', key: ['rnPosts'],
       fields: [
-        { key: 'rnPosts', label: 'Concurrent RN posts during opening hours', type: 'number', min: 0 }
+        { key: 'rnPosts', label: 'Concurrent RN posts during opening hours', short: 'RN posts', type: 'number', min: 0 }
       ]
     }
   };
 
+  /** Unit types restrict which methods a unit may use (e.g. OPD: clinic or patient volume only). */
+  var UNIT_TYPES = {
+    INPATIENT: { label: 'Inpatient ward / critical care', section: 'INPATIENT', methods: ['RATIO', 'ACUITY'] },
+    OPD: { label: 'Outpatient (OPD)', section: 'OTHER', methods: ['CLINIC', 'ACTIVITY'] },
+    OR: { label: 'Operating rooms', section: 'OTHER', methods: ['OR'] },
+    ER: { label: 'Emergency', section: 'OTHER', methods: ['ER'] },
+    DELIVERY: { label: 'Delivery / labour', section: 'OTHER', methods: ['DELIVERY'] },
+    PROCEDURE: { label: 'Procedure unit', section: 'OTHER', methods: ['PROCEDURE'] },
+    CSSD: { label: 'CSSD', section: 'OTHER', methods: ['CSSD'] },
+    OTHER: { label: 'Other service', section: 'OTHER', methods: ['POSTS', 'ACTIVITY'] }
+  };
+  var METHOD_DEFAULT_TYPE = { RATIO: 'INPATIENT', ACUITY: 'INPATIENT', CLINIC: 'OPD', ACTIVITY: 'OPD', OR: 'OR', ER: 'ER',
+    DELIVERY: 'DELIVERY', PROCEDURE: 'PROCEDURE', CSSD: 'CSSD', POSTS: 'OTHER' };
+
   var RELATION_TYPES = ['', 'SUBSET_OF', 'POSSIBLE_DUPLICATE_OF'];
   var RELATION_RESOLUTIONS = ['UNRESOLVED', 'SEPARATE', 'EXCLUDE'];
+  var CONTRIB_CATEGORIES = ['CNC', 'PCA'];
 
   // ---------------------------------------------------------------------------
   // Small helpers
@@ -200,12 +233,14 @@ function NWC_ENGINE_FACTORY_() {
     var n = typeof v === 'number' ? v : Number(String(v).replace(/,/g, ''));
     return isFinite(n) ? n : null;
   }
-  function bool(v) { return v === true || v === 'TRUE' || v === 'true' || v === 1 || v === '1' || v === 'Yes'; }
-  function round2(n) { return n === null ? null : Math.round((n + (n >= 0 ? EPS : -EPS)) * 100) / 100; }
+  function bool(v) { return v === true || v === 'TRUE' || v === 'true' || v === 1 || v === '1' || v === 'Yes' || v === 'YES'; }
+  function round2(n) { return n === null || n === undefined ? n : Math.round((n + (n >= 0 ? EPS : -EPS)) * 100) / 100; }
   function ceilSafe(n) { return n === null ? null : Math.ceil(n - 1e-7); }
   function sum(list, fn) { var t = 0; for (var i = 0; i < list.length; i++) { var v = fn(list[i]); if (v !== null && v !== undefined) t += v; } return t; }
+  function pos(n) { return n > EPS ? n : 0; }
   function normName(s) { return String(s || '').toLowerCase().replace(/[‒-―\-–—]/g, '-').replace(/\s+/g, ' ').trim(); }
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  function fmt(n) { return n === null || n === undefined ? '—' : (Math.round(n * 100) / 100).toString(); }
 
   // ---------------------------------------------------------------------------
   // Calendar and hours per FTE
@@ -225,7 +260,7 @@ function NWC_ENGINE_FACTORY_() {
    * Hours per FTE. Two mutually exclusive modes:
    *  DEDUCT: available = scheduled − leave − training − other; FTE = hours ÷ available.
    *  UPLIFT: FTE = hours ÷ scheduled × (1 + uplift). Leave fields are ignored.
-   * hoursPerFTE is the single divisor used everywhere (FTE and supply hours).
+   * hoursPerFTE is the single divisor used everywhere (FTE, supply hours, recruitment).
    */
   function hoursModel(settings, mi) {
     var s = settings || {};
@@ -290,8 +325,10 @@ function NWC_ENGINE_FACTORY_() {
   }
 
   // ---------------------------------------------------------------------------
-  // Method calculations. Each returns { hours, missing[], lines[], ... }.
-  // "hours" = required RN coverage hours for the month.
+  // Method calculations. Each returns
+  //   { hours, shiftHours, missing[], lines[], ... }
+  // hours      = average-workload RN coverage hours for the month
+  // shiftHours = coverage hours needed to staff whole nurses on every shift
   // ---------------------------------------------------------------------------
   function need(p, key, label, missing) {
     var v = num(p[key]);
@@ -304,7 +341,11 @@ function NWC_ENGINE_FACTORY_() {
     if (minHours > workHours + EPS) lines.push('Minimum coverage applies (exceeds workload)');
     return Math.max(workHours, minHours);
   }
-  function fmt(n) { return n === null || n === undefined ? '—' : (Math.round(n * 100) / 100).toString(); }
+  /** Whole-nurse staffing for a flat opening schedule. */
+  function wholeShift(hours, openHours) {
+    if (!(openHours > 0)) return hours;
+    return ceilSafe(hours / openHours) * openHours;
+  }
 
   var CALC = {
     RATIO: function (u, p, ctx, sch) {
@@ -320,13 +361,14 @@ function NWC_ENGINE_FACTORY_() {
       var avgRN = Math.max(ratioRN, minRN);
       lines.push('Average occupied beds = ' + beds + ' × ' + occ + '% = ' + fmt(occupied));
       lines.push('Average RN coverage = MAX(' + fmt(occupied) + ' ÷ ' + ppr + ', ' + minRN + ') = ' + fmt(avgRN));
-      lines.push('Coverage hours = ' + fmt(avgRN) + ' × ' + fmt(sch.hours) + ' open h (' + sch.detail + ')');
+      lines.push('Average-workload hours = ' + fmt(avgRN) + ' × ' + fmt(sch.hours) + ' open h (' + sch.detail + ')');
       var census = num(p.shiftCensus);
       var censusAssumed = census === null;
       if (censusAssumed) census = ceilSafe(occupied);
       var shiftRN = Math.max(ceilSafe(census / ppr), ceilSafe(minRN));
+      lines.push('Whole-shift staffing = ' + shiftRN + ' RN per shift (census ' + census + (censusAssumed ? ', assumed' : '') + ') × ' + fmt(sch.hours) + ' h');
       return {
-        hours: avgRN * sch.hours, missing: [], lines: lines, occupied: occupied, avgRN: avgRN,
+        hours: avgRN * sch.hours, shiftHours: shiftRN * sch.hours, missing: [], lines: lines, occupied: occupied, avgRN: avgRN,
         minApplied: minRN > ratioRN + EPS, shiftRN: shiftRN, shiftCensus: census, shiftCensusAssumed: censusAssumed
       };
     },
@@ -349,11 +391,12 @@ function NWC_ENGINE_FACTORY_() {
         lines.push(g.name + ': ' + fmt(n) + ' ÷ ' + r + ' = ' + fmt(n / r) + ' RN');
       });
       var avgRN = Math.max(ratioRN, minRN);
-      lines.push('Average RN coverage = MAX(' + fmt(ratioRN) + ', ' + minRN + ') = ' + fmt(avgRN));
-      lines.push('Coverage hours = ' + fmt(avgRN) + ' × ' + fmt(sch.hours) + ' open h');
+      var shiftRN = Math.max(ceilSafe(shiftRNRaw), ceilSafe(minRN));
+      lines.push('Average RN coverage = MAX(' + fmt(ratioRN) + ', ' + minRN + ') = ' + fmt(avgRN) + ' × ' + fmt(sch.hours) + ' open h');
+      lines.push('Whole-shift staffing = ' + shiftRN + ' RN per shift × ' + fmt(sch.hours) + ' h');
       return {
-        hours: avgRN * sch.hours, missing: [], lines: lines, occupied: occupied, avgRN: avgRN, beds: beds,
-        minApplied: minRN > ratioRN + EPS, shiftRN: Math.max(ceilSafe(shiftRNRaw), ceilSafe(minRN)),
+        hours: avgRN * sch.hours, shiftHours: shiftRN * sch.hours, missing: [], lines: lines, occupied: occupied, avgRN: avgRN, beds: beds,
+        minApplied: minRN > ratioRN + EPS, shiftRN: shiftRN,
         shiftCensus: sum(groups, function (g) { return ceilSafe(num(g.patients)); }), shiftCensusAssumed: true
       };
     },
@@ -378,7 +421,8 @@ function NWC_ENGINE_FACTORY_() {
       lines.push(recInc ? 'Recovery: staffed elsewhere / included' : 'Recovery = ' + rec + ' RN × ' + fmt(sch.hours) + ' h = ' + fmt(recHours));
       var inHours = withMinimum(roomHours + prepHours + recHours, minRN, sch.hours, lines);
       lines.push(emInc ? 'Emergency cover: included / not applicable' : 'Emergency = ' + em + ' RN × ' + fmt(outside) + ' h outside operating hours = ' + fmt(emHours));
-      return { hours: inHours + emHours, missing: [], lines: lines, openHoursOverride: sch.hours + (em > 0 ? outside : 0) };
+      return { hours: inHours + emHours, shiftHours: wholeShift(inHours, sch.hours) + ceilSafe(em) * outside,
+        missing: [], lines: lines, openHoursOverride: sch.hours + (em > 0 ? outside : 0) };
     },
     ER: function (u, p, ctx) {
       var missing = [], lines = [];
@@ -396,17 +440,17 @@ function NWC_ENGINE_FACTORY_() {
         if (num(r.minutesPerCase) === null) missing.push(lbl + ': RN minutes per case');
       });
       if (missing.length) return { hours: null, missing: missing, lines: lines };
-      var days = ctx.month.days, total = 0, open = 0;
+      var days = ctx.month.days, total = 0, open = 0, shift = 0;
       periods.forEach(function (per) {
         var wl = sum(work.filter(function (w) { return normName(w.period) === normName(per.name); }),
           function (w) { return num(w.casesPerMonth) * num(w.minutesPerCase) / 60; });
         var ph = num(per.hoursPerDay) * days;
         var minH = num(per.minRN) * ph;
         var req = Math.max(wl, minH);
-        open += ph; total += req;
+        open += ph; total += req; shift += wholeShift(req, ph);
         lines.push(per.name + ': workload ' + fmt(wl) + ' h vs minimum ' + per.minRN + ' RN × ' + fmt(ph) + ' h = ' + fmt(minH) + ' h → ' + fmt(req) + ' h');
       });
-      return { hours: total, missing: [], lines: lines, openHoursOverride: open };
+      return { hours: total, shiftHours: shift, missing: [], lines: lines, openHoursOverride: open };
     },
     DELIVERY: function (u, p, ctx, sch) {
       var missing = [], lines = [];
@@ -416,9 +460,8 @@ function NWC_ENGINE_FACTORY_() {
       missing = missing.concat(sch.missing);
       if (missing.length) return { hours: null, missing: missing, lines: lines };
       var other = (num(p.otherCasesPerMonth) || 0) * (num(p.minutesPerOtherCase) || 0) / 60;
-      var wl = n * h + other;
       lines.push('Delivery workload = ' + n + ' × ' + h + ' h = ' + fmt(n * h) + ' h; other assessments ' + fmt(other) + ' h');
-      return { hours: withMinimum(wl, minRN, sch.hours, lines), missing: [], lines: lines };
+      return { hours: withMinimum(n * h + other, minRN, sch.hours, lines), missing: [], lines: lines };
     },
     PROCEDURE: function (u, p, ctx, sch) {
       var missing = [], lines = [];
@@ -446,8 +489,7 @@ function NWC_ENGINE_FACTORY_() {
       var sets = num(p.setsPerMonth), tmin = num(p.techMinutesPerSet);
       var tech = { status: STATUS.DATA, requiredFTE: null, currentHC: num(p.currentTechnicians) };
       if (sets !== null && tmin !== null && ctx.hours.hoursPerFTE) {
-        var th = sets * tmin / 60;
-        tech.hours = th; tech.requiredFTE = round2(th / ctx.hours.hoursPerFTE); tech.status = 'Calculated';
+        tech.hours = sets * tmin / 60; tech.requiredFTE = tech.hours / ctx.hours.hoursPerFTE; tech.status = 'Calculated';
       }
       if (missing.length) return { hours: null, missing: missing, lines: lines, technicians: tech };
       var h = Math.max(posts, minRN) * sch.hours;
@@ -463,21 +505,21 @@ function NWC_ENGINE_FACTORY_() {
       var minRN = need(u, 'minRNPerShift', 'Minimum RN during opening hours', missing);
       missing = missing.concat(sch.missing);
       if (missing.length) return { hours: null, missing: missing, lines: lines };
-      var active = c * ut / 100, conc = active * rpc, rn = Math.max(conc, minRN);
+      var conc = c * ut / 100 * rpc, rn = Math.max(conc, minRN);
       lines.push('Concurrent RN = ' + c + ' clinics × ' + ut + '% × ' + rpc + ' RN = ' + fmt(conc) + '; with minimum ' + minRN + ' → ' + fmt(rn));
       lines.push('Coverage hours = ' + fmt(rn) + ' × ' + fmt(sch.hours) + ' open h (' + sch.detail + ')');
       return { hours: rn * sch.hours, missing: [], lines: lines, minApplied: minRN > conc + EPS };
     },
     ACTIVITY: function (u, p, ctx, sch) {
       var missing = [], lines = [];
-      var n = need(p, 'activitiesPerMonth', 'Activities per month', missing);
-      var m = need(p, 'minutesPerActivity', 'RN minutes per activity', missing);
+      var n = need(p, 'activitiesPerMonth', 'Visits / activities per month', missing);
+      var m = need(p, 'minutesPerActivity', 'RN minutes per visit', missing);
       var minRN = need(u, 'minRNPerShift', 'Minimum RN during opening hours', missing);
       missing = missing.concat(sch.missing);
       if (missing.length) return { hours: null, missing: missing, lines: lines };
       var support = num(p.supportHoursPerMonth) || 0;
       var wl = n * m / 60 + support;
-      lines.push('Activity workload = ' + n + ' × ' + m + ' min ÷ 60 + ' + support + ' support h = ' + fmt(wl) + ' h');
+      lines.push('Patient-volume workload = ' + n + ' × ' + m + ' min ÷ 60 + ' + support + ' support h = ' + fmt(wl) + ' h');
       return { hours: withMinimum(wl, minRN, sch.hours, lines), missing: [], lines: lines };
     },
     POSTS: function (u, p, ctx, sch) {
@@ -510,16 +552,39 @@ function NWC_ENGINE_FACTORY_() {
     if (f.integer && Math.floor(v) !== v) issue(list, 'error', scope, label + ' must be a whole number.', unitId, f.key);
   }
 
+  function unitTypeOf(u) {
+    if (u.unitType && UNIT_TYPES[u.unitType]) return u.unitType;
+    if (u.section === 'INPATIENT') return 'INPATIENT';
+    return METHOD_DEFAULT_TYPE[u.method] || 'OTHER';
+  }
+  function allowedMethods(u) { return UNIT_TYPES[unitTypeOf(u)].methods.slice(); }
+
+  var CONTRIB_FIELDS = [
+    { key: 'allocatedFTE', label: 'Allocated FTE', type: 'number', min: 0 },
+    { key: 'contributionPct', label: 'Contribution %', type: 'number', min: 0, max: 100 }
+  ];
+
+  function availablePool(s, cat) {
+    var fte = num(cat === 'CNC' ? s.cncFTE : s.pcaFTE);
+    return fte === null ? (num(cat === 'CNC' ? s.cncHeadcount : s.pcaHeadcount) || 0) : fte;
+  }
+
   function validateState(state, ctx) {
     var list = [];
     var s = state.settings || {};
-    SETTINGS_FIELDS.forEach(function (f) { checkField(list, f, s[f.key], 'Settings', '', ''); });
+    SETTINGS_FIELDS.forEach(function (f) {
+      checkField(list, f, s[f.key], 'Settings', '', '');
+      if (f.type === 'enum' && f.options.indexOf(s[f.key]) < 0) issue(list, 'error', 'Settings', f.label + ': choose one of ' + f.options.join(' / ') + '.', '', f.key);
+    });
     if (!ctx.month) issue(list, 'error', 'Settings', 'Reporting month must be in YYYY-MM format.', '', 'reportingMonth');
-    if (s.fteMode !== 'DEDUCT' && s.fteMode !== 'UPLIFT') issue(list, 'error', 'Settings', 'Choose exactly one FTE method (Deduct or Uplift).', '', 'fteMode');
     if (ctx.hours.scheduledHours !== null && !(ctx.hours.hoursPerFTE > 0)) {
       issue(list, 'error', 'Settings', 'Available coverage hours per FTE must be positive (scheduled hours minus leave, training and other unavailable hours).', '', 'leaveHours');
     }
     if (ctx.hours.scheduledHours === null) issue(list, 'error', 'Settings', 'Scheduled monthly hours cannot be calculated: enter weekly hours or an override.', '', 'contractedWeeklyHours');
+    ['cnc', 'pca'].forEach(function (k) {
+      var fte = num(s[k + 'FTE']), hc = num(s[k + 'Headcount']);
+      if (fte !== null && hc !== null && fte > hc + EPS) issue(list, 'error', 'Settings', (k === 'cnc' ? 'CNC' : 'PCA/PCT') + ' FTE cannot exceed headcount.', '', k + 'FTE');
+    });
 
     var units = activeUnits(state);
     var ids = {}, names = {};
@@ -534,15 +599,20 @@ function NWC_ENGINE_FACTORY_() {
       else if (names[nm]) issue(list, 'error', u.name, 'Duplicate unit name "' + u.name + '" (also used by another active unit).', u.id, 'name');
       names[nm] = true;
       if (!METHODS[u.method]) { issue(list, 'error', u.name, 'Unknown workload method "' + u.method + '".', u.id, 'method'); return; }
+      var type = unitTypeOf(u);
+      if (allowedMethods(u).indexOf(u.method) < 0) {
+        issue(list, 'error', u.name, UNIT_TYPES[type].label + ' units may only use: ' +
+          allowedMethods(u).map(function (m) { return METHODS[m].label; }).join(' or ') + '.', u.id, 'method');
+      }
       var hc = num(u.currentRNHeadcount), fte = num(u.currentRNFTE);
       if (hc !== null && hc < 0) issue(list, 'error', u.name, 'Current RN headcount cannot be negative.', u.id, 'currentRNHeadcount');
       if (hc !== null && Math.floor(hc) !== hc) issue(list, 'error', u.name, 'Current RN headcount must be a whole number.', u.id, 'currentRNHeadcount');
       if (fte !== null && fte < 0) issue(list, 'error', u.name, 'Current RN FTE cannot be negative.', u.id, 'currentRNFTE');
-      if (fte !== null && hc !== null && fte > hc + EPS) issue(list, 'warning', u.name, 'Current RN FTE exceeds headcount — check contracts.', u.id, 'currentRNFTE');
+      if (fte !== null && hc !== null && fte > hc + EPS) issue(list, 'error', u.name, 'Current RN FTE (' + fte + ') exceeds headcount (' + hc + ').', u.id, 'currentRNFTE');
       var minRN = num(u.minRNPerShift);
       if (minRN !== null && minRN < 0) issue(list, 'error', u.name, 'Minimum RN coverage cannot be negative.', u.id, 'minRNPerShift');
       var ot = num(u.otEligibleHeadcount);
-      if (ot !== null && (ot < 0 || (hc !== null && ot > hc))) issue(list, 'error', u.name, 'Overtime-eligible headcount must be between 0 and current RN headcount.', u.id, 'otEligibleHeadcount');
+      if (ot !== null && (ot < 0 || Math.floor(ot) !== ot || (hc !== null && ot > hc))) issue(list, 'error', u.name, 'Overtime-eligible headcount must be a whole number between 0 and current RN headcount.', u.id, 'otEligibleHeadcount');
       var sch = u.schedule || {};
       ['weekdayHours', 'fridayHours', 'holidayHours'].forEach(function (k) {
         var v = num(sch[k]);
@@ -556,12 +626,11 @@ function NWC_ENGINE_FACTORY_() {
       if (u.isOpen !== false && wh && sl && Math.abs(wh / sl - Math.round(wh / sl)) > 1e-6 && u.section === 'INPATIENT') {
         issue(list, 'warning', u.name, 'Weekday hours (' + wh + ') are not a whole number of ' + sl + '-hour shifts.', u.id, 'weekdayHours');
       }
-      var ovr = num(u.manualOverrideFTE);
       if (!isBlank(u.manualOverrideFTE)) {
+        var ovr = num(u.manualOverrideFTE);
         if (ovr === null || ovr < 0) issue(list, 'error', u.name, 'Manual override FTE must be a non-negative number.', u.id, 'manualOverrideFTE');
         if (isBlank(u.manualOverrideReason)) issue(list, 'error', u.name, 'Manual override requires a reason.', u.id, 'manualOverrideReason');
       }
-      // Method parameters (only the active method is validated and calculated).
       var def = METHODS[u.method], p = (u.params || {})[u.method] || {};
       def.fields.forEach(function (f) { checkField(list, f, p[f.key], u.name, u.id, ''); });
       Object.keys(def.tables || {}).forEach(function (tk) {
@@ -608,32 +677,39 @@ function NWC_ENGINE_FACTORY_() {
       }
     });
 
-    // CNC contributions: no duplicate employee capacity.
-    var cncByRef = {}, cncPair = {};
-    (state.cncContributions || []).forEach(function (c, i) {
-      var tag = 'CNC row ' + (i + 1) + (c.cncRef ? ' (' + c.cncRef + ')' : '');
-      ['totalHours', 'adminHours', 'directCareHours'].forEach(function (k) {
-        var v = num(c[k]); if (v !== null && v < 0) issue(list, 'error', 'CNC', tag + ': hours cannot be negative.', c.unitId, k);
-      });
-      if (isBlank(c.cncRef)) { issue(list, 'error', 'CNC', tag + ': employee reference is required to prevent double counting.', c.unitId, 'cncRef'); return; }
-      var tot = num(c.totalHours), adm = num(c.adminHours) || 0, dc = num(c.directCareHours) || 0;
-      if (tot !== null && dc + adm > tot + EPS) issue(list, 'error', 'CNC', tag + ': direct-care + supervision/admin hours exceed total hours.', c.unitId, 'directCareHours');
-      var pair = normName(c.cncRef) + '|' + c.unitId;
-      if (cncPair[pair]) issue(list, 'error', 'CNC', tag + ': same CNC entered twice for the same unit.', c.unitId, 'cncRef');
-      cncPair[pair] = true;
-      cncByRef[normName(c.cncRef)] = (cncByRef[normName(c.cncRef)] || 0) + dc;
+    // Contribution allocations: no duplicates, no double counting, within available FTE.
+    var pair = {}, byRef = {}, totals = { CNC: 0, PCA: 0 }, refs = { CNC: {}, PCA: {} };
+    (state.contributions || []).forEach(function (c, i) {
+      var cat = c.category, tag = (cat === 'PCA' ? 'PCA/PCT' : 'CNC') + ' allocation row ' + (i + 1) + (c.staffRef ? ' (' + c.staffRef + ')' : '');
+      if (CONTRIB_CATEGORIES.indexOf(cat) < 0) { issue(list, 'error', 'Contributions', tag + ': category must be CNC or PCA.', c.unitId, 'category'); return; }
+      CONTRIB_FIELDS.forEach(function (f) { checkField(list, f, c[f.key], 'Contributions', c.unitId, tag + ': '); });
       var u = findUnit(state, c.unitId);
-      if (!u) issue(list, 'error', 'CNC', tag + ': assigned unit not found.', c.unitId, 'unitId');
-    });
-    Object.keys(cncByRef).forEach(function (ref) {
-      if (ctx.hours.hoursPerFTE && cncByRef[ref] > ctx.hours.hoursPerFTE + EPS) {
-        issue(list, 'error', 'CNC', 'CNC ' + ref + ' is credited with ' + round2(cncByRef[ref]) + ' direct-care hours, more than one FTE (' + round2(ctx.hours.hoursPerFTE) + ' h) — duplicate capacity.', '', 'directCareHours');
+      if (isBlank(c.unitId) || !u) issue(list, 'error', 'Contributions', tag + ': assigned unit not found.', c.unitId, 'unitId');
+      else if (bool(u.archived)) issue(list, 'warning', 'Contributions', tag + ': unit is archived — not credited.', c.unitId, 'unitId');
+      var ref = normName(c.staffRef);
+      var key = cat + '|' + c.unitId + '|' + ref;
+      if (pair[key]) issue(list, 'error', 'Contributions', tag + ': duplicate allocation — the same ' + (ref ? 'employee' : 'group') + ' is already allocated to this unit.', c.unitId, 'staffRef');
+      pair[key] = true;
+      var fte = num(c.allocatedFTE) || 0;
+      totals[cat] += fte;
+      if (ref) {
+        refs[cat][ref] = true;
+        byRef[cat + '|' + ref] = (byRef[cat + '|' + ref] || 0) + fte;
       }
+      if (bool(c.countedInRNFTE)) issue(list, 'warning', 'Contributions', tag + ': already counted in the unit\'s current RN FTE — not credited again.', c.unitId, 'countedInRNFTE');
+      if (!bool(c.approved)) issue(list, 'warning', 'Contributions', tag + ': ' + (cat === 'CNC' ? 'qualification for direct care' : 'local support-task approval') + ' not confirmed — not credited.', c.unitId, 'approved');
     });
-    var cncCount = Object.keys(cncByRef).length, cncHC = num(s.cncHeadcount);
-    if (cncHC !== null && cncCount > cncHC) issue(list, 'error', 'CNC', cncCount + ' CNCs have contributions but CNC headcount is ' + cncHC + '.', '', 'cncHeadcount');
+    Object.keys(byRef).forEach(function (k) {
+      if (byRef[k] > 1 + EPS) issue(list, 'error', 'Contributions', k.replace('|', ' ') + ' is allocated ' + round2(byRef[k]) + ' FTE across units — one employee cannot exceed 1.0 FTE.', '', 'allocatedFTE');
+    });
+    CONTRIB_CATEGORIES.forEach(function (cat) {
+      var pool = availablePool(s, cat), label = cat === 'PCA' ? 'PCA/PCT' : 'CNC';
+      if (totals[cat] > pool + EPS) issue(list, 'error', 'Contributions', label + ' allocations total ' + round2(totals[cat]) + ' FTE, more than the ' + round2(pool) + ' FTE available.', '', 'allocatedFTE');
+      var hc = num(cat === 'CNC' ? s.cncHeadcount : s.pcaHeadcount);
+      var n = Object.keys(refs[cat]).length;
+      if (hc !== null && n > hc) issue(list, 'error', 'Contributions', n + ' named ' + label + ' employees are allocated but headcount is ' + hc + '.', '', 'staffRef');
+    });
 
-    // Transfers: structural checks only; eligibility is evaluated in calculateTransfers.
     (state.transfers || []).forEach(function (t, i) {
       var v = num(t.fte);
       if (v !== null && v < 0) issue(list, 'error', 'Transfers', 'Transfer row ' + (i + 1) + ': FTE cannot be negative.', '', 'fte');
@@ -649,27 +725,55 @@ function NWC_ENGINE_FACTORY_() {
   function activeUnits(state) { return (state.units || []).filter(function (u) { return !bool(u.archived); }); }
 
   // ---------------------------------------------------------------------------
-  // Unit calculation
+  // Contributions (credited FTE per unit, before PCA cap)
   // ---------------------------------------------------------------------------
-  function calcUnit(u, ctx, cncHoursByUnit) {
+  function evaluateContributions(state, settings, ctx) {
+    var rows = [], cnc = {}, pca = {};
+    (state.contributions || []).forEach(function (c) {
+      var cat = c.category, why = [], ok = true;
+      var u = ctx.unitIndex[c.unitId];
+      var fte = num(c.allocatedFTE);
+      var pctRow = num(c.contributionPct);
+      var pct = pctRow !== null ? pctRow : num(cat === 'CNC' ? settings.cncDirectCarePct : settings.pcaSubstitutionPct);
+      if (CONTRIB_CATEGORIES.indexOf(cat) < 0) { ok = false; why.push('Unknown category'); }
+      if (!u || bool(u.archived)) { ok = false; why.push('No active unit'); }
+      if (!(fte > 0)) { ok = false; why.push('Allocated FTE not entered'); }
+      if (pct === null) { ok = false; why.push('Contribution % not set'); }
+      if (!bool(c.approved)) { ok = false; why.push(cat === 'CNC' ? 'Direct-care qualification not confirmed' : 'Support tasks not locally approved'); }
+      if (bool(c.countedInRNFTE)) { ok = false; why.push('Already counted in current RN FTE'); }
+      var credited = ok ? fte * pct / 100 : 0;
+      if (ok) {
+        var map = cat === 'CNC' ? cnc : pca;
+        map[c.unitId] = (map[c.unitId] || 0) + credited;
+      }
+      rows.push({ id: c.id, category: cat, staffRef: c.staffRef, unitId: c.unitId, allocatedFTE: fte, pctUsed: pct,
+        pctFromDefault: pctRow === null, eligible: ok, creditedFTE: credited, reasons: why });
+    });
+    return { rows: rows, cnc: cnc, pca: pca };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Unit calculation (before transfers)
+  // ---------------------------------------------------------------------------
+  function calcUnit(u, ctx, contrib) {
     var hpf = ctx.hours.hoursPerFTE;
+    var basis = ctx.settings.requirementBasis === 'WHOLE_SHIFT' ? 'WHOLE_SHIFT' : 'AVERAGE';
     var r = {
-      id: u.id, name: u.name, section: u.section, method: u.method, methodLabel: METHODS[u.method] ? METHODS[u.method].label : u.method,
+      id: u.id, name: u.name, section: u.section, unitType: unitTypeOf(u), method: u.method,
+      methodLabel: METHODS[u.method] ? METHODS[u.method].label : u.method,
       isOpen: u.isOpen !== false && u.isOpen !== 'FALSE', status: null, missing: [], lines: [], notes: [],
-      openHours: null, coverageHours: null, methodHours: null, avgConcurrentRN: null, requiredFTE: null, establishment: null,
+      openHours: null, coverageHours: null, avgHours: null, shiftHours: null, avgFTE: null, shiftFTE: null, basis: basis,
+      avgConcurrentRN: null, requiredFTE: null, establishment: null,
       currentHC: num(u.currentRNHeadcount) || 0, currentFTE: null, currentFTEAssumed: false,
-      cncHours: cncHoursByUnit[u.id] || 0, cncFTE: 0, effectiveFTE: null,
-      netGap: null, shortage: null, surplus: null, shiftRN: null, shiftCensus: null, shiftCensusAssumed: false,
-      occupied: null, counted: true, provisionalReasons: [], technicians: null
+      cncFTE: contrib.cnc[u.id] || 0, pcaRawFTE: contrib.pca[u.id] || 0, pcaFTE: null, pcaCapped: false,
+      shiftRN: null, shiftCensus: null, shiftCensusAssumed: false, occupied: null,
+      counted: true, provisionalReasons: [], technicians: null, isOverride: false
     };
     var fteIn = num(u.currentRNFTE);
     r.currentFTE = fteIn === null ? r.currentHC : fteIn;
     r.currentFTEAssumed = fteIn === null;
     if (r.currentFTEAssumed && r.currentHC > 0) r.notes.push('Current FTE assumed equal to headcount.');
-    r.cncFTE = hpf ? round2(r.cncHours / hpf) : 0;
-    r.effectiveFTE = round2(r.currentFTE + r.cncFTE);
 
-    // Relations (subset / possible duplicate) decide whether the row is aggregated.
     if (u.relation && u.relation.type) {
       var rel = u.relation, other = ctx.unitIndex[rel.unitId];
       var kind = rel.type === 'SUBSET_OF' ? 'subset of' : 'possible duplicate of';
@@ -686,7 +790,8 @@ function NWC_ENGINE_FACTORY_() {
     }
 
     if (!r.isOpen) {
-      r.status = STATUS.CLOSED; r.coverageHours = 0; r.requiredFTE = 0; r.establishment = 0; r.openHours = 0;
+      r.status = STATUS.CLOSED; r.coverageHours = 0; r.avgHours = 0; r.shiftHours = 0; r.requiredFTE = 0; r.avgFTE = 0; r.shiftFTE = 0;
+      r.establishment = 0; r.openHours = 0;
       r.lines.push('Unit closed: no minimum coverage requirement.');
     } else {
       var p = (u.params || {})[u.method] || {};
@@ -695,44 +800,50 @@ function NWC_ENGINE_FACTORY_() {
       var res = fn ? fn(u, p, ctx, sch) : { hours: null, missing: ['Workload method'], lines: [] };
       r.lines = res.lines || [];
       r.missing = res.missing || [];
-      r.methodHours = res.hours;
       r.openHours = res.openHoursOverride !== undefined ? res.openHoursOverride : sch.hours;
       r.occupied = res.occupied === undefined ? null : res.occupied;
-      r.shiftRN = res.shiftRN === undefined ? null : res.shiftRN;
       r.shiftCensus = res.shiftCensus === undefined ? null : res.shiftCensus;
       r.shiftCensusAssumed = !!res.shiftCensusAssumed;
       r.minApplied = !!res.minApplied;
       r.technicians = res.technicians || null;
+      if (res.hours !== null && res.hours !== undefined) {
+        r.avgHours = res.hours;
+        r.shiftHours = res.shiftHours !== undefined ? res.shiftHours : wholeShift(res.hours, r.openHours);
+        if (hpf) { r.avgFTE = r.avgHours / hpf; r.shiftFTE = r.shiftHours / hpf; }
+        r.shiftRN = res.shiftRN !== undefined ? res.shiftRN : (r.openHours > 0 ? ceilSafe(r.avgHours / r.openHours) : null);
+        if (r.openHours > 0) r.avgConcurrentRN = r.avgHours / r.openHours;
+      }
       var ovr = num(u.manualOverrideFTE);
       if (ovr !== null && !isBlank(u.manualOverrideReason)) {
-        r.status = STATUS.OVERRIDE;
-        r.requiredFTE = round2(ovr);
+        r.status = STATUS.OVERRIDE; r.isOverride = true;
+        r.requiredFTE = ovr;
         r.coverageHours = hpf ? ovr * hpf : null;
         r.notes.push('Manual override: ' + u.manualOverrideReason);
-        if (res.hours !== null && hpf) r.notes.push('Method result would be ' + round2(res.hours / hpf) + ' FTE.');
-      } else if (res.hours === null || !hpf) {
+        if (r.avgFTE !== null) r.notes.push('Method result would be ' + round2(basis === 'WHOLE_SHIFT' ? r.shiftFTE : r.avgFTE) + ' FTE.');
+      } else if (r.avgHours === null || !hpf) {
         r.status = STATUS.DATA;
         if (!hpf) r.missing.push('Valid hours per FTE (Settings)');
       } else {
-        r.coverageHours = res.hours;
-        r.requiredFTE = round2(res.hours / hpf);
+        r.coverageHours = basis === 'WHOLE_SHIFT' ? r.shiftHours : r.avgHours;
+        r.requiredFTE = r.coverageHours / hpf;
       }
-      if (r.requiredFTE !== null) r.establishment = ceilSafe(r.requiredFTE);
-      if (r.coverageHours !== null && r.openHours) r.avgConcurrentRN = r.coverageHours / r.openHours;
-      if (r.shiftRN === null && r.avgConcurrentRN !== null) r.shiftRN = ceilSafe(r.avgConcurrentRN);
     }
     if (r.requiredFTE !== null) {
-      r.netGap = round2(r.effectiveFTE - r.requiredFTE);
-      r.shortage = round2(Math.max(0, -r.netGap));
-      r.surplus = round2(Math.max(0, r.netGap));
-      if (!r.status) r.status = r.netGap < -EPS ? STATUS.GAP : STATUS.MET;
+      r.establishment = ceilSafe(r.requiredFTE);
+      var cap = r.requiredFTE * (num(ctx.settings.pcaMaxSharePct) || 0) / 100;
+      r.pcaFTE = Math.min(r.pcaRawFTE, cap);
+      r.pcaCapped = r.pcaRawFTE > cap + EPS;
+      if (r.pcaCapped) r.notes.push('PCA/PCT credit capped at ' + ctx.settings.pcaMaxSharePct + '% of required FTE (' + round2(cap) + ' of ' + round2(r.pcaRawFTE) + ' FTE allocated).');
+    } else {
+      r.pcaFTE = r.pcaRawFTE;
     }
+    r.rnCreditedBeforeTransfers = r.currentFTE + r.cncFTE;
     return r;
   }
 
   // ---------------------------------------------------------------------------
   // Transfers: only confirmed, compatible transfers that do not create a
-  // shortage in the source are counted. Evaluated in table order.
+  // qualified-RN shortage in the source are counted. Evaluated in table order.
   // ---------------------------------------------------------------------------
   function calculateTransfers(state, byId) {
     var out = [], sent = {}, received = {};
@@ -740,20 +851,19 @@ function NWC_ENGINE_FACTORY_() {
       var r = { id: t.id, index: i, sourceUnitId: t.sourceUnitId, destUnitId: t.destUnitId, fte: num(t.fte),
         competencyConfirmed: bool(t.competencyConfirmed), coverageCompatible: bool(t.coverageCompatible), valid: false, reasons: [] };
       var src = byId[t.sourceUnitId], dst = byId[t.destUnitId];
-      if (!src) r.reasons.push('Source unit missing or archived');
-      if (!dst) r.reasons.push('Destination unit missing or archived');
+      if (!src) r.reasons.push('Source unit missing, archived or excluded');
+      if (!dst) r.reasons.push('Destination unit missing, archived or excluded');
       if (src && dst && src.id === dst.id) r.reasons.push('Source and destination are the same');
       if (!(r.fte > 0)) r.reasons.push('FTE must be greater than zero');
       if (!r.competencyConfirmed) r.reasons.push('Competency not confirmed');
       if (!r.coverageCompatible) r.reasons.push('Coverage compatibility not confirmed');
-      if (src && !src.counted) r.reasons.push('Source is excluded from totals');
-      if (dst && !dst.counted) r.reasons.push('Destination is excluded from totals');
       if (dst && !dst.isOpen) r.reasons.push('Destination unit is closed');
       if (src && src.requiredFTE === null) r.reasons.push('Source requirement unknown (Data Required)');
+      if (dst && dst.requiredFTE === null) r.reasons.push('Destination requirement unknown (Data Required)');
       if (src && src.requiredFTE !== null && r.fte > 0) {
-        var already = sent[src.id] || 0;
-        var rnAvailable = src.currentFTE - already;                // CNC contribution is not transferable
-        var spare = src.effectiveFTE + (received[src.id] || 0) - already - src.requiredFTE;
+        var already = sent[src.id] || 0, got = received[src.id] || 0;
+        var rnAvailable = src.currentFTE + got - already;                 // CNC/PCA credit is not transferable
+        var spare = src.rnCreditedBeforeTransfers + got - already - src.requiredFTE;   // qualified coverage only
         if (r.fte > rnAvailable + EPS) r.reasons.push('Source has only ' + round2(Math.max(0, rnAvailable)) + ' RN FTE left to transfer');
         if (r.fte > spare + EPS) r.reasons.push('Would create a shortage in the source (spare ' + round2(Math.max(0, spare)) + ' FTE)');
       }
@@ -761,7 +871,7 @@ function NWC_ENGINE_FACTORY_() {
         r.valid = true;
         sent[src.id] = (sent[src.id] || 0) + r.fte;
         received[dst.id] = (received[dst.id] || 0) + r.fte;
-        if (dst.requiredFTE !== null && dst.effectiveFTE + received[dst.id] - (sent[dst.id] || 0) > dst.requiredFTE + EPS) {
+        if (dst.rnCreditedBeforeTransfers + received[dst.id] - (sent[dst.id] || 0) > dst.requiredFTE + EPS) {
           r.reasons.push('Note: exceeds the destination shortage');
         }
       }
@@ -778,56 +888,58 @@ function NWC_ENGINE_FACTORY_() {
     var settings = normalizeSettings(state.settings);
     var mi = monthInfo(settings.reportingMonth);
     var hours = hoursModel(settings, mi);
+    var hpf = hours.hoursPerFTE;
     var ctx = { settings: settings, month: mi, hours: hours, unitIndex: {} };
     (state.units || []).forEach(function (u) { ctx.unitIndex[u.id] = u; });
-    var issues = validateState({ settings: settings, units: state.units, transfers: state.transfers, cncContributions: state.cncContributions }, ctx);
-
-    // Eligible CNC direct-care hours by unit (qualified, assigned, hours specified).
-    var cncHoursByUnit = {}, cncRows = [];
-    (state.cncContributions || []).forEach(function (c) {
-      var dc = num(c.directCareHours), ok = true, why = [];
-      if (!bool(c.qualified)) { ok = false; why.push('Qualification not confirmed'); }
-      if (isBlank(c.unitId) || !ctx.unitIndex[c.unitId] || bool(ctx.unitIndex[c.unitId].archived)) { ok = false; why.push('No active unit assignment'); }
-      if (!(dc > 0)) { ok = false; why.push('Direct-care hours not specified'); }
-      if (isBlank(c.cncRef)) { ok = false; why.push('Employee reference missing'); }
-      var tot = num(c.totalHours), adm = num(c.adminHours) || 0;
-      if (tot !== null && dc !== null && dc + adm > tot + EPS) { ok = false; why.push('Hours inconsistent'); }
-      if (ok) cncHoursByUnit[c.unitId] = (cncHoursByUnit[c.unitId] || 0) + dc;
-      cncRows.push({ id: c.id, cncRef: c.cncRef, unitId: c.unitId, eligible: ok, reasons: why, directCareHours: ok ? dc : 0 });
-    });
+    var norm = { settings: settings, units: state.units, transfers: state.transfers, contributions: state.contributions };
+    var issues = validateState(norm, ctx);
+    var contrib = evaluateContributions(norm, settings, ctx);
 
     var results = [], byId = {};
     activeUnits(state).forEach(function (u) {
-      var r = calcUnit(u, ctx, cncHoursByUnit);
+      var r = calcUnit(u, ctx, contrib);
       results.push(r);
       if (r.counted) byId[r.id] = r;
     });
 
     var tr = calculateTransfers(state, byId);
     var otMax = num(settings.otMaxHoursPerRN);
-    var otPct = num(settings.otEligiblePct); if (otPct === null) otPct = 100;
+    var otPct = num(settings.otEligiblePct);
+    var otRate = num(settings.costOTPerHour);
+    var pcaRemovesRN = settings.pcaReducesRNWorkload === 'YES';
     results.forEach(function (r) {
       var u = ctx.unitIndex[r.id];
-      r.transferOut = round2(tr.sent[r.id] || 0);
-      r.transferIn = round2(tr.received[r.id] || 0);
-      r.postTransferFTE = round2(r.effectiveFTE - r.transferOut + r.transferIn);
-      if (r.requiredFTE === null) { r.postGap = null; r.remainingShortage = null; r.uncoveredHours = null; r.feasibleOT = null; return; }
-      r.postGap = round2(r.postTransferFTE - r.requiredFTE);
-      r.remainingShortage = round2(Math.max(0, -r.postGap));
-      r.recruitPosts = ceilSafe(r.remainingShortage);
-      var supply = hours.hoursPerFTE ? r.postTransferFTE * hours.hoursPerFTE : 0;
-      r.supplyHours = supply;
-      r.uncoveredHours = Math.max(0, (r.coverageHours || 0) - supply);
-      if (r.uncoveredHours < 0.005) r.uncoveredHours = 0;
-      var eligHC = num(u.otEligibleHeadcount);
-      if (eligHC === null) eligHC = Math.floor(r.currentHC * otPct / 100 + EPS);
-      r.otEligibleHC = eligHC;
-      r.otCapacity = otMax === null ? null : eligHC * otMax;
-      r.feasibleOT = otMax === null ? null : Math.min(r.uncoveredHours, r.otCapacity);
-      r.uncoveredAfterOT = r.feasibleOT === null ? null : r.uncoveredHours - r.feasibleOT;
+      r.transferOut = tr.sent[r.id] || 0;
+      r.transferIn = tr.received[r.id] || 0;
+      r.rnCreditedFTE = r.rnCreditedBeforeTransfers + r.transferIn - r.transferOut;
+      var eligOverride = num(u.otEligibleHeadcount);
+      r.otEligibleSource = eligOverride !== null ? 'Unit override' : (otPct !== null ? 'Settings ' + otPct + '%' : 'Not set');
+      r.otEligibleHC = eligOverride !== null ? eligOverride : (otPct !== null ? Math.floor(r.currentHC * otPct / 100 + EPS) : null);
+      if (r.requiredFTE === null) {
+        r.rnGap = r.adjustedGap = null;
+        r.requiredHours = r.availableQualifiedHours = r.uncoveredHours = r.otCapacity = r.feasibleOT = null;
+        r.remainingUncoveredHours = r.remainingRecruitFTE = r.otCost = null;
+        return;
+      }
+      // Signed gaps: required − credited (positive = shortage).
+      r.rnGap = r.requiredFTE - r.rnCreditedFTE;
+      r.adjustedGap = r.rnGap - r.pcaFTE;
+      if (!r.status) r.status = r.rnGap > EPS ? STATUS.GAP : STATUS.MET;
+      // Estimated overtime required (full precision).
+      r.requiredHours = r.coverageHours;
+      r.pcaHoursRemoved = pcaRemovesRN && hpf ? r.pcaFTE * hpf : 0;
+      r.availableQualifiedHours = hpf ? r.rnCreditedFTE * hpf : 0;
+      r.uncoveredHours = Math.max(r.requiredHours - r.pcaHoursRemoved - r.availableQualifiedHours, 0);
+      if (r.uncoveredHours < 1e-6) r.uncoveredHours = 0;
+      r.otCapacity = r.otEligibleHC === null || otMax === null ? null : r.otEligibleHC * otMax;
+      if (r.uncoveredHours === 0) r.feasibleOT = 0;
+      else r.feasibleOT = r.otCapacity === null ? null : Math.min(r.uncoveredHours, r.otCapacity);
+      r.remainingUncoveredHours = r.feasibleOT === null ? null : Math.max(r.uncoveredHours - r.feasibleOT, 0);
+      r.remainingRecruitFTE = r.remainingUncoveredHours === null || !hpf ? null : r.remainingUncoveredHours / hpf;
+      r.otCost = r.feasibleOT === null ? null : (r.feasibleOT === 0 ? 0 : (otRate === null ? 'RATE' : r.feasibleOT * otRate));
     });
 
-    // Provisional reasons and summary.
+    // --- Summary over COMPLETED units only (same units for required and available) ---
     var counted = results.filter(function (r) { return r.counted; });
     var known = counted.filter(function (r) { return r.requiredFTE !== null; });
     var dataReq = counted.filter(function (r) { return r.status === STATUS.DATA; });
@@ -836,86 +948,125 @@ function NWC_ENGINE_FACTORY_() {
     counted.forEach(function (r) { r.provisionalReasons.forEach(function (x) { provisional.push(x); }); });
     var errors = issues.filter(function (x) { return x.level === 'error'; });
     if (errors.length) provisional.push(errors.length + ' validation error(s)');
+    var S = function (list, fn) { return sum(list, fn); };
+
+    // Waterfall: Σ per-unit shortages after each credit (no cross-unit offsetting).
+    var stage = function (fn) { return S(known, function (r) { return pos(fn(r)); }); };
+    var s0 = stage(function (r) { return r.requiredFTE - r.currentFTE; });
+    var s1 = stage(function (r) { return r.requiredFTE - r.currentFTE - r.cncFTE; });
+    var s2 = stage(function (r) { return r.rnGap; });
+    var s3 = stage(function (r) { return r.adjustedGap; });
+
+    var otUnits = known.filter(function (r) { return r.uncoveredHours > 0; });
+    var otMissing = otUnits.filter(function (r) { return r.feasibleOT === null; }).length;
+    var costMissing = known.some(function (r) { return r.otCost === 'RATE'; });
 
     var sm = {
-      currentRNHC: sum(counted, function (r) { return r.currentHC; }),
-      currentRNFTE: round2(sum(counted, function (r) { return r.currentFTE; })),
-      cncContributionFTE: round2(sum(counted, function (r) { return r.cncFTE; })),
-      requiredRNFTE: round2(sum(known, function (r) { return r.requiredFTE; })),
-      establishment: sum(known, function (r) { return r.establishment; }),
-      currentFTEInDataRequiredUnits: round2(sum(dataReq, function (r) { return r.currentFTE; })),
-      shortageFTE: round2(sum(known, function (r) { return r.shortage; })),
-      surplusFTE: round2(sum(known, function (r) { return r.surplus; })),
-      netGapFTE: round2(sum(known, function (r) { return r.netGap; })),
-      confirmedTransferFTE: round2(sum(tr.rows, function (t) { return t.valid ? t.fte : 0; })),
+      completedUnits: known.length,
+      totalsLabel: dataReq.length ? 'Completed units only — provisional' : (provisional.length ? 'Provisional' : 'All units'),
+      requiredFTE: S(known, function (r) { return r.requiredFTE; }),
+      avgFTE: S(known, function (r) { return r.avgFTE; }),
+      shiftFTE: S(known, function (r) { return r.shiftFTE; }),
+      establishment: S(known, function (r) { return r.establishment; }),
+      currentRNFTE: S(known, function (r) { return r.currentFTE; }),
+      currentRNHC: S(counted, function (r) { return r.currentHC; }),
+      currentRNFTEAllUnits: S(counted, function (r) { return r.currentFTE; }),
+      currentFTEInDataRequiredUnits: S(dataReq, function (r) { return r.currentFTE; }),
+      cncCreditedFTE: S(known, function (r) { return r.cncFTE; }),
+      pcaCreditedFTE: S(known, function (r) { return r.pcaFTE; }),
+      cncCreditedFTEAllUnits: S(counted, function (r) { return r.cncFTE; }),
+      pcaCreditedFTEAllUnits: S(counted, function (r) { return r.pcaFTE; }),
+      transferFTE: S(tr.rows, function (t) { return t.valid ? t.fte : 0; }),
       invalidTransfers: tr.rows.filter(function (t) { return !t.valid; }).length,
-      recruitmentFTE: round2(sum(known, function (r) { return r.remainingShortage; })),
-      recruitmentPosts: sum(known, function (r) { return r.recruitPosts; }),
-      requiredCoverageHours: sum(known, function (r) { return r.coverageHours; }),
-      uncoveredHours: sum(known, function (r) { return r.uncoveredHours; }),
-      feasibleOTHours: otMax === null ? null : sum(known, function (r) { return r.feasibleOT; }),
-      uncoveredAfterOTHours: otMax === null ? null : sum(known, function (r) { return r.uncoveredAfterOT; }),
-      pcaHC: num(settings.pcaHeadcount) || 0,
-      pcaFTE: num(settings.pcaFTE),
+      rnShortageFTE: S(known, function (r) { return pos(r.rnGap); }),
+      rnSurplusFTE: S(known, function (r) { return pos(-r.rnGap); }),
+      finalShortageFTE: S(known, function (r) { return pos(r.adjustedGap); }),
+      finalSurplusFTE: S(known, function (r) { return pos(-r.adjustedGap); }),
+      shortageUnits: known.filter(function (r) { return r.adjustedGap > EPS; }).length,
+      waterfall: [
+        { key: 'gross', label: 'RN shortage before contributions', value: s0 },
+        { key: 'cnc', label: 'CNC qualified direct care', value: s1 - s0 },
+        { key: 'transfer', label: 'Confirmed transfers', value: s2 - s1 },
+        { key: 'rn', label: 'RN coverage shortage', value: s2, subtotal: true },
+        { key: 'pca', label: 'PCA/PCT approved support tasks', value: s3 - s2 },
+        { key: 'final', label: 'Final planning shortage', value: s3, subtotal: true }
+      ],
+      requiredHours: S(known, function (r) { return r.requiredHours; }),
+      availableQualifiedHours: S(known, function (r) { return r.availableQualifiedHours; }),
+      uncoveredHours: S(known, function (r) { return r.uncoveredHours; }),
+      otDataMissingUnits: otMissing,
+      feasibleOTHours: otMissing ? null : S(known, function (r) { return r.feasibleOT; }),
+      feasibleOTHoursKnown: S(known, function (r) { return r.feasibleOT; }),
+      remainingUncoveredHours: otMissing ? null : S(known, function (r) { return r.remainingUncoveredHours; }),
+      remainingRecruitFTE: otMissing ? null : S(known, function (r) { return r.remainingRecruitFTE; }),
+      otCost: otMissing ? null : (costMissing ? 'RATE' : S(known, function (r) { return typeof r.otCost === 'number' ? r.otCost : 0; })),
       cncHC: num(settings.cncHeadcount) || 0,
-      cncFTE: num(settings.cncFTE),
+      pcaHC: num(settings.pcaHeadcount) || 0,
+      cncAvailableFTE: availablePool(settings, 'CNC'),
+      pcaAvailableFTE: availablePool(settings, 'PCA'),
+      cncAllocatedFTE: S(contrib.rows, function (c) { return c.category === 'CNC' ? (c.allocatedFTE || 0) : 0; }),
+      pcaAllocatedFTE: S(contrib.rows, function (c) { return c.category === 'PCA' ? (c.allocatedFTE || 0) : 0; }),
+      scenarioApproved: settings.pcaAssumptionsApproved === 'YES',
+      pcaRemovesRNWorkload: pcaRemovesRN,
+      basis: settings.requirementBasis === 'WHOLE_SHIFT' ? 'WHOLE_SHIFT' : 'AVERAGE',
       unitsTotal: results.length,
       unitsCounted: counted.length,
-      unitsOpen: counted.filter(function (r) { return r.isOpen; }).length,
-      unitsComplete: counted.filter(function (r) { return r.status === STATUS.MET || r.status === STATUS.GAP || r.status === STATUS.CLOSED; }).length,
       unitsDataRequired: dataReq.length,
       unitsOverride: counted.filter(function (r) { return r.status === STATUS.OVERRIDE; }).length,
       unitsExcluded: results.length - counted.length,
       provisional: provisional.length > 0,
       provisionalReasons: provisional
     };
-    sm.totalWorkforceHC = sm.currentRNHC + sm.pcaHC + sm.cncHC;
+    sm.totalHC = sm.currentRNHC + sm.cncHC + sm.pcaHC;
     sm.completenessPct = sm.unitsCounted ? Math.round((sm.unitsCounted - sm.unitsDataRequired) / sm.unitsCounted * 100) : 100;
-    sm.dataStatus = sm.unitsDataRequired ? 'Provisional — ' + sm.unitsDataRequired + ' unit(s) need data' : (provisional.length ? 'Provisional' : 'Complete');
+    sm.dataStatus = sm.unitsDataRequired ? sm.unitsDataRequired + ' unit(s) need data' : (provisional.length ? 'Provisional' : 'Complete');
 
     var checks = [
-      check('Net gap = surpluses − shortages', sm.netGapFTE, round2(sm.surplusFTE - sm.shortageFTE)),
-      check('Required RN FTE = sum of unit rows', sm.requiredRNFTE, round2(sum(known, function (r) { return r.requiredFTE; }))),
-      check('Current RN headcount = sum of unit rows', sm.currentRNHC, sum(counted, function (r) { return r.currentHC; })),
-      check('Total workforce = RN + PCA/PCT + CNC', sm.totalWorkforceHC, sm.currentRNHC + sm.pcaHC + sm.cncHC),
-      check('Recruitment = shortages − confirmed transfers received by short units', sm.recruitmentFTE,
-        round2(sum(known, function (r) { return Math.max(0, -(r.netGap + r.transferIn - r.transferOut)); }))),
-      check('Transfers sent = transfers received', round2(sum(counted, function (r) { return r.transferOut; })), round2(sum(counted, function (r) { return r.transferIn; }))),
-      check('Recruitment ≤ shortages (transfers only reduce need)', Math.min(sm.recruitmentFTE, sm.shortageFTE), sm.recruitmentFTE)
+      check('Final shortage − surplus = Σ unit adjusted gaps', sm.finalShortageFTE - sm.finalSurplusFTE, S(known, function (r) { return r.adjustedGap; })),
+      check('RN shortage − surplus = Σ unit RN gaps', sm.rnShortageFTE - sm.rnSurplusFTE, S(known, function (r) { return r.rnGap; })),
+      check('Waterfall steps add up to the final planning shortage', s0 + (s1 - s0) + (s2 - s1) + (s3 - s2), sm.finalShortageFTE),
+      check('Required FTE = sum of completed unit rows', sm.requiredFTE, S(known, function (r) { return r.requiredFTE; })),
+      check('Current RN headcount = sum of unit rows', sm.currentRNHC, S(counted, function (r) { return r.currentHC; })),
+      check('Total headcount = RN + CNC + PCA/PCT', sm.totalHC, sm.currentRNHC + sm.cncHC + sm.pcaHC),
+      check('Transfers sent = transfers received', S(counted, function (r) { return r.transferOut; }), S(counted, function (r) { return r.transferIn; })),
+      check('CNC allocated ≤ CNC FTE available', Math.min(sm.cncAllocatedFTE, sm.cncAvailableFTE), sm.cncAllocatedFTE),
+      check('PCA/PCT allocated ≤ PCA/PCT FTE available', Math.min(sm.pcaAllocatedFTE, sm.pcaAvailableFTE), sm.pcaAllocatedFTE)
     ];
+    if (!pcaRemovesRN && hpf) checks.push(check('Uncovered hours ÷ hours per FTE = RN coverage shortage', sm.uncoveredHours / hpf, sm.rnShortageFTE));
+    if (!otMissing && hpf) checks.push(check('Feasible OT + remaining recruitment × h/FTE = uncovered hours', sm.feasibleOTHours + sm.remainingRecruitFTE * hpf, sm.uncoveredHours));
 
     return {
       version: VERSION, month: mi, hours: hours, settings: settings, units: results, transfers: tr.rows,
-      cnc: cncRows, summary: sm, costs: calculateCosts(settings, sm, hours), issues: issues, checks: checks
+      contributions: contrib.rows, summary: sm, costs: calculateCosts(settings, sm, hours), issues: issues, checks: checks
     };
   }
 
   function check(label, a, b) {
-    return { label: label, calculated: a, reported: b, ok: Math.abs((a || 0) - (b || 0)) < 0.011 };
+    return { label: label, calculated: a, reported: b, ok: Math.abs((a || 0) - (b || 0)) < 1e-6 };
   }
 
   function calculateCosts(s, sm, hours) {
     var cur = s.currencyLabel || '';
-    function money(rate, qty) { var r = num(rate); return r === null ? null : r * qty; }
+    function money(rate, qty) { var r = num(rate); return r === null || qty === null ? null : r * qty; }
     var rn = num(s.costRNMonthly), ot = num(s.costOTPerHour), tmp = num(s.costTempPerHour);
     var hpf = hours.hoursPerFTE;
     var options = [
-      { option: 'Confirmed transfers', quantity: sm.confirmedTransferFTE, unit: 'FTE',
-        monthlyCost: 0, oneOffCost: money(s.costTransferPerFTE, sm.confirmedTransferFTE),
+      { option: 'Confirmed transfers', quantity: sm.transferFTE, unit: 'FTE',
+        monthlyCost: 0, oneOffCost: money(s.costTransferPerFTE, sm.transferFTE),
         costPerHour: 0, note: 'Redeploys existing RNs; no additional payroll. Only confirmed, compatible transfers counted.' },
-      { option: 'Overtime (feasible only)', quantity: sm.feasibleOTHours, unit: 'hours',
-        monthlyCost: sm.feasibleOTHours === null ? null : money(ot, sm.feasibleOTHours), costPerHour: ot,
-        note: sm.feasibleOTHours === null ? 'Maximum overtime hours not entered — Data Required.' : 'Capped by eligible RN headcount × maximum hours. Does not solve every shortage.' },
-      { option: 'Temporary staff (all uncovered hours)', quantity: sm.uncoveredHours, unit: 'hours',
-        monthlyCost: money(tmp, sm.uncoveredHours), costPerHour: tmp, note: 'Uncovered hours after confirmed transfers.' },
-      { option: 'Recruitment', quantity: sm.recruitmentFTE, unit: 'FTE',
-        monthlyCost: money(rn, sm.recruitmentFTE), costPerHour: rn !== null && hpf ? rn / hpf : null,
-        note: sm.recruitmentPosts + ' whole posts (rounded per unit).' }
+      { option: 'Estimated overtime required (feasible)', quantity: sm.feasibleOTHours, unit: 'hours',
+        monthlyCost: sm.otCost === 'RATE' ? null : sm.otCost, costPerHour: ot,
+        note: sm.feasibleOTHours === null ? 'Overtime eligibility not set for ' + sm.otDataMissingUnits + ' unit(s) — Data Required.' : 'Capped by eligible RN headcount × maximum hours. Not actual overtime worked or payroll payable.' },
+      { option: 'Temporary staff (remaining uncovered hours)', quantity: sm.remainingUncoveredHours, unit: 'hours',
+        monthlyCost: money(tmp, sm.remainingUncoveredHours), costPerHour: tmp, note: 'Hours left after feasible overtime.' },
+      { option: 'Recruitment', quantity: sm.remainingRecruitFTE, unit: 'FTE',
+        monthlyCost: money(rn, sm.remainingRecruitFTE), costPerHour: rn !== null && hpf ? rn / hpf : null,
+        note: 'Remaining recruitment FTE after feasible overtime.' }
     ];
     var current = [
-      { category: 'RN', fte: sm.currentRNFTE, monthlyCost: money(rn, sm.currentRNFTE) },
-      { category: 'CNC', fte: sm.cncFTE !== null ? sm.cncFTE : sm.cncHC, monthlyCost: money(s.costCNCMonthly, sm.cncFTE !== null ? sm.cncFTE : sm.cncHC) },
-      { category: 'PCA/PCT', fte: sm.pcaFTE !== null ? sm.pcaFTE : sm.pcaHC, monthlyCost: money(s.costPCAMonthly, sm.pcaFTE !== null ? sm.pcaFTE : sm.pcaHC) }
+      { category: 'RN', fte: sm.currentRNFTEAllUnits, monthlyCost: money(rn, sm.currentRNFTEAllUnits) },
+      { category: 'CNC', fte: sm.cncAvailableFTE, monthlyCost: money(s.costCNCMonthly, sm.cncAvailableFTE) },
+      { category: 'PCA/PCT', fte: sm.pcaAvailableFTE, monthlyCost: money(s.costPCAMonthly, sm.pcaAvailableFTE) }
     ];
     return { currency: cur, options: options, current: current };
   }
@@ -931,11 +1082,13 @@ function NWC_ENGINE_FACTORY_() {
 
   function defaultSettings() { return normalizeSettings({}); }
 
-  function newUnit(id, name, section, method) {
+  function newUnit(id, name, section, method, unitType) {
     var inpatient = section === 'INPATIENT';
+    var type = unitType || (inpatient ? 'INPATIENT' : METHOD_DEFAULT_TYPE[method] || 'OPD');
+    var m = method || UNIT_TYPES[type].methods[0];
     var u = {
-      id: id, name: name || 'New unit', section: inpatient ? 'INPATIENT' : 'OTHER',
-      method: method || (inpatient ? 'RATIO' : 'CLINIC'), isOpen: true, archived: false, sortOrder: 999,
+      id: id, name: name || 'New unit', section: inpatient ? 'INPATIENT' : 'OTHER', unitType: type,
+      method: m, isOpen: true, archived: false, sortOrder: 999,
       currentRNHeadcount: 0, currentRNFTE: '', minRNPerShift: 1,
       schedule: inpatient
         ? { weekdayHours: 24, openDays: NON_FRIDAY_DAYS.join(','), fridayHours: 24, holidayHours: 24 }
@@ -959,29 +1112,29 @@ function NWC_ENGINE_FACTORY_() {
   }
 
   /**
-   * Switch a unit's workload method. Inputs of the previous method are kept
-   * (so switching back loses nothing); fields with the same key (e.g. beds)
-   * are copied into the new method only where the new method's value is blank.
+   * Switch a unit's workload method. The previous method's inputs are kept
+   * untouched (switching back restores them). The new method uses only its
+   * own stored inputs, or blanks — old parameters are never reinterpreted.
    */
   function switchMethod(u, method) {
-    var old = u.method;
     u.params = u.params || {};
     if (!u.params[method]) u.params[method] = blankParams(method);
-    var from = u.params[old] || {}, to = u.params[method], def = METHODS[method];
-    if (def && old !== method) {
-      def.fields.forEach(function (f) {
-        if (f.key in from && isBlank(to[f.key]) && !isBlank(from[f.key])) to[f.key] = from[f.key];
-      });
-    }
     u.method = method;
     return u;
   }
 
+  function newContribution(id, category, unitId) {
+    return { id: id, category: category === 'PCA' ? 'PCA' : 'CNC', staffRef: '', unitId: unitId || '', allocatedFTE: '',
+      contributionPct: '', approved: false, countedInRNFTE: false, notes: '' };
+  }
+
   return {
-    VERSION: VERSION, switchMethod: switchMethod, STATUS: STATUS, METHODS: METHODS, SETTINGS_FIELDS: SETTINGS_FIELDS,
+    VERSION: VERSION, STATUS: STATUS, METHODS: METHODS, UNIT_TYPES: UNIT_TYPES, SETTINGS_FIELDS: SETTINGS_FIELDS,
     NON_FRIDAY_DAYS: NON_FRIDAY_DAYS, RELATION_TYPES: RELATION_TYPES, RELATION_RESOLUTIONS: RELATION_RESOLUTIONS,
+    CONTRIB_CATEGORIES: CONTRIB_CATEGORIES,
     calculate: calculate, monthInfo: monthInfo, hoursModel: hoursModel, scheduleHours: scheduleHours,
     defaultSettings: defaultSettings, normalizeSettings: normalizeSettings, newUnit: newUnit, blankParams: blankParams,
+    switchMethod: switchMethod, unitTypeOf: unitTypeOf, allowedMethods: allowedMethods, newContribution: newContribution,
     num: num, bool: bool, round2: round2, ceilSafe: ceilSafe, isBlank: isBlank, normName: normName, clone: clone
   };
 }

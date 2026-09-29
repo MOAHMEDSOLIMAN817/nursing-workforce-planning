@@ -111,8 +111,14 @@ test('Results sheet lists every active unit and the summary', () => {
   const res = c.__ss.sheets.Results.data;
   const ids = res.map(r => r[0]).filter(x => /^U-/.test(String(x)));
   assert.equal(ids.length, 25);
-  assert.ok(res.some(r => r[0] === 'Recruitment need FTE'));
-  assert.ok(res.some(r => r[0] === 'Status' && r[1] === 'PROVISIONAL'));
+  assert.ok(res.some(r => r[0] === 'Final planning shortage FTE' && /PLANNING SCENARIO/.test(r[2])));
+  assert.ok(res.some(r => r[0] === 'Totals' && r[1] === 'Completed units only — provisional'));
+  assert.ok(res.some(r => r[0] === 'Remaining recruitment FTE (after feasible OT)'));
+  const hdr = res.find(r => r[0] === 'Unit ID');
+  ['Average-workload FTE', 'Whole-shift FTE', 'CNC FTE', 'PCA/PCT FTE', 'Remaining gap (+short)', 'Uncovered hours', 'Feasible OT hours', 'Estimated OT cost', 'Remaining recruitment FTE']
+    .forEach(h => assert.ok(hdr.includes(h), h));
+  const or = res.find(r => r[0] === 'U-OR');
+  assert.equal(or[hdr.indexOf('Required FTE')], 'Data Required', 'missing data never written as 0');
 });
 
 test('delivery and fixed-posts methods apply workload and minimum coverage', () => {
@@ -125,11 +131,11 @@ test('delivery and fixed-posts methods apply workload and minimum coverage', () 
   const p = C.newUnit('AN', 'Anes', 'OTHER', 'POSTS');
   p.schedule = { weekdayHours: 10, openDays: 'Sat,Sun,Mon,Tue,Wed,Thu', fridayHours: 0, holidayHours: 0 };
   p.minRNPerShift = 1; p.params.POSTS = { rnPosts: 3 };
-  const r = C.calculate({ settings: s, units: [dr, p], transfers: [], cncContributions: [] });
+  const r = C.calculate({ settings: s, units: [dr, p], transfers: [], contributions: [] });
   const u = id => r.units.find(x => x.id === id);
   assert.ok(Math.abs(u('DR').coverageHours - Math.max(1200 + 100, 744)) < 1e-9);
   dr.params.DELIVERY.deliveriesPerMonth = 10;
-  const r2 = C.calculate({ settings: s, units: [dr], transfers: [], cncContributions: [] });
+  const r2 = C.calculate({ settings: s, units: [dr], transfers: [], contributions: [] });
   assert.ok(Math.abs(r2.units[0].coverageHours - 744) < 1e-9, 'minimum 1 RN × 744 h applies');
   assert.ok(Math.abs(u('AN').coverageHours - 3 * 26 * 10) < 1e-9);
 });
@@ -140,7 +146,7 @@ test('relation errors: unknown related unit and self-reference are rejected', ()
   a.relation = { type: 'SUBSET_OF', unitId: 'NOPE', resolution: 'UNRESOLVED' };
   const b = C.newUnit('B', 'B', 'INPATIENT', 'RATIO');
   b.relation = { type: 'SUBSET_OF', unitId: 'B', resolution: 'UNRESOLVED' };
-  const r = C.calculate({ settings: C.defaultSettings(), units: [a, b], transfers: [], cncContributions: [] });
+  const r = C.calculate({ settings: C.defaultSettings(), units: [a, b], transfers: [], contributions: [] });
   const msgs = r.issues.filter(i => i.level === 'error').map(i => i.message).join('\n');
   assert.match(msgs, /Related unit not found/);
   assert.match(msgs, /related to itself/);

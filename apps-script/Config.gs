@@ -10,12 +10,13 @@
  */
 var APP_CONFIG = {
   APP_TITLE: 'Nursing Workforce Calculator',
-  SCHEMA_VERSION: 1,
+  SCHEMA_VERSION: 2,
   SHEETS: {
     SETTINGS: 'Settings',
     UNITS: 'Units',
     TRANSFERS: 'Transfers',
-    CNC: 'CNC_Contributions',
+    CONTRIB: 'Contributions',
+    LEGACY_CNC: 'CNC_Contributions',
     RESULTS: 'Results',
     AUDIT: 'Audit_Log',
     META: '_Meta'
@@ -24,13 +25,15 @@ var APP_CONFIG = {
   // so new columns can be appended without breaking saved data.
   COLUMNS: {
     Settings: ['key', 'value', 'label', 'updated_at'],
-    Units: ['unit_id', 'name', 'section', 'method', 'is_open', 'archived', 'sort_order',
+    Units: ['unit_id', 'name', 'section', 'unit_type', 'method', 'is_open', 'archived', 'sort_order',
       'current_rn_hc', 'current_rn_fte', 'min_rn_per_shift',
       'weekday_hours', 'open_days', 'friday_hours', 'holiday_hours',
       'manual_override_fte', 'manual_override_reason',
       'relation_type', 'related_unit_id', 'relation_resolution',
       'ot_eligible_hc', 'notes', 'params_json', 'updated_at', 'updated_by'],
     Transfers: ['transfer_id', 'source_unit_id', 'dest_unit_id', 'fte', 'competency_confirmed', 'coverage_compatible', 'notes', 'updated_at'],
+    Contributions: ['allocation_id', 'category', 'staff_ref', 'unit_id', 'allocated_fte', 'contribution_pct', 'approved', 'counted_in_rn_fte', 'notes', 'updated_at'],
+    // Version-1 sheet (hours-based CNC rows). Read once for migration, never written.
     CNC_Contributions: ['contribution_id', 'cnc_ref', 'unit_id', 'qualified', 'total_hours', 'admin_hours', 'direct_care_hours', 'notes', 'updated_at'],
     Audit_Log: ['timestamp', 'user', 'action', 'details'],
     _Meta: ['key', 'value']
@@ -42,7 +45,7 @@ var H24_ = { weekdayHours: 24, openDays: ALL_DAYS_, fridayHours: 24, holidayHour
 
 function seedInpatient_(id, name, beds, occ, ppr, rn, extra) {
   var u = {
-    id: id, name: name, section: 'INPATIENT', method: 'RATIO', isOpen: true, archived: false,
+    id: id, name: name, section: 'INPATIENT', unitType: 'INPATIENT', method: 'RATIO', isOpen: true, archived: false,
     currentRNHeadcount: rn, currentRNFTE: '', minRNPerShift: 1,
     schedule: JSON.parse(JSON.stringify(H24_)),
     manualOverrideFTE: '', manualOverrideReason: '',
@@ -55,8 +58,9 @@ function seedInpatient_(id, name, beds, occ, ppr, rn, extra) {
 }
 
 function seedOther_(id, name, method, rn, schedule, params, extra) {
+  var TYPES = { DELIVERY: 'DELIVERY', OR: 'OR', ER: 'ER', CSSD: 'CSSD', PROCEDURE: 'PROCEDURE', POSTS: 'OTHER', CLINIC: 'OPD', ACTIVITY: 'OPD' };
   var u = {
-    id: id, name: name, section: 'OTHER', method: method, isOpen: true, archived: false,
+    id: id, name: name, section: 'OTHER', unitType: TYPES[method], method: method, isOpen: true, archived: false,
     currentRNHeadcount: rn, currentRNFTE: '', minRNPerShift: '',
     schedule: schedule, manualOverrideFTE: '', manualOverrideReason: '',
     relation: { type: '', unitId: '', resolution: 'UNRESOLVED' },

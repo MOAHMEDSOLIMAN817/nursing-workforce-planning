@@ -66,32 +66,52 @@ Excel-like tables. Numbers update as you type, and Save writes them to the sheet
 14. Run **Nursing Workforce → Initialise / repair sheets** and confirm it reports *nothing changed*.
 15. On the **Settings** sheet tab, check that `reportingMonth` still shows `YYYY-MM` text and has not been converted to a date.
 
+**Updating an existing v1 install:** replace all 8 files, then reload the Sheet and open the calculator (or run
+`initializeSystem`). This runs the one-time v2 migration:
+- adds a `unit_type` column and a `Contributions` sheet
+- converts any `CNC_Contributions` rows from hours to FTE allocations
+
+Saved inputs are not overwritten. The `Audit_Log` records what was migrated.
+
 ## Use
 
-- **Settings:** reporting month, weekly hours (48), shift length (12), and an
-  optional scheduled-hours override. Choose one FTE method (deduct unavailable
-  hours **or** relief uplift). Also set overtime limits, support-staff
-  headcounts (PCA/PCT 54, CNC 35), optional costs, CNC direct-care
-  contributions, archived units and the data-quality list.
-- **Inpatient:** beds, occupancy, patients per RN (or acuity groups), a minimum
-  RN per shift for each unit, the schedule including Fridays, and current
-  headcount and FTE. Open **details** to set the shift census, subset or
-  duplicate status, and manual overrides.
-- **Other & OPD:** each unit uses one method: OR, ER (volume × acuity by
-  period), Delivery, Procedure (Endoscopy and Cathlab are separate), CSSD
-  (RN posts; technicians reported separately), OPD clinic-based **or**
-  activity-based, or Fixed posts.
-- **Summary:** cards, the unit table, transfers, overtime and cost options, and
-  reconciliation checks.
-- **Save** is blocked while validation errors exist. **Reset to Saved** reloads
-  from the sheet after you confirm. Archiving asks for confirmation and can be
-  undone in Settings.
+- **Summary (executive dashboard):**
+  - Six headline cards: Required FTE, Current RN FTE, CNC contribution,
+    PCA/PCT contribution, Final planning shortage and Total headcount.
+  - A waterfall showing how each credit changes the final gap.
+  - Estimated overtime cards: uncovered hours, feasible OT hours, estimated OT
+    cost, remaining recruitment FTE.
+  - The unit table, transfers, cost options and reconciliation checks.
+- **Inpatient / Other & OPD:**
+  - A simple table: Unit, Key inputs, Required FTE, Current RN FTE, CNC,
+    PCA/PCT, Remaining gap, Status.
+  - The **Estimated overtime** toggle swaps in the overtime columns.
+  - **▸** opens the advanced inputs: unit type and method, schedule and
+    minimum, average vs whole-shift FTE, override, staffing and overtime
+    eligibility, CNC/PCA allocations, relations, calculation trail.
+- **Settings:**
+  - Hours per FTE and the requirement basis.
+  - Overtime: 48 h default, eligibility.
+  - Support staff: headcount, FTE, default %s, PCA cap, approval flags.
+  - Costs, the allocation table, archived units and data quality.
+
+**Gap sign:** required − credited. Positive = **▲ Shortage** (red); negative = **▼ Surplus** (green).
+
+**Two results:**
+- The **RN coverage gap** credits qualified RN and CNC direct care, plus
+  confirmed transfers.
+- The **adjusted workforce planning gap** also credits approved PCA/PCT
+  support tasks. It is labelled a *planning scenario* until the contribution
+  assumptions are approved in Settings.
+
+**Saving:** Save is blocked while validation errors exist. Reset to Saved,
+archive and delete actions all ask for confirmation.
 
 ## Tests
 
 ```bash
-npm run test:gas   # 54 engine, server and Apps Script-compatibility tests (node:test); also run by `npm test`
-npm run test:ui    # browser end-to-end test (39 checks; needs Playwright/Chromium)
+npm run test:gas   # 62 engine, server and Apps Script-compatibility tests (node:test); also run by `npm test`
+npm run test:ui    # browser end-to-end test (60 checks; needs Playwright/Chromium)
 ```
 
 See `PROJECT_MEMORY.md` for calculation definitions and design decisions.
