@@ -1,0 +1,654 @@
+<script>
+/* Scripts.html — browser UI. All numbers come from NwcCalc (Calculations.gs),
+ * the same engine the server uses to re-validate before saving. */
+(function () {
+  'use strict';
+  var C = NwcCalc, S = C.STATUS;
+  var App = { saved: null, state: null, revision: 0, result: null, page: 'summary', sel: { INPATIENT: null, OTHER: null }, dirty: false, saving: false };
+  var $ = function (id) { return document.getElementById(id); };
+
+  // ---------------------------------------------------------------------------
+  // Formatting
+  // ---------------------------------------------------------------------------
+  function esc(s) { return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function f2(n) { return n === null || n === undefined ? '<span class="dr">Data Required</span>' : Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function f0(n) { return n === null || n === undefined ? '<span class="dr">Data Required</span>' : Math.round(n).toLocaleString('en-US'); }
+  function f1(n) { return n === null || n === undefined ? '—' : (Math.round(n * 10) / 10).toLocaleString('en-US'); }
+  function gap(n) { if (n === null || n === undefined) return '<span class="dr">Data Required</span>'; var c = n < -0.004 ? 'neg' : n > 0.004 ? 'pos' : ''; return '<span class="' + c + '">' + (n > 0 ? '+' : '') + f2(n) + '</span>'; }
+  function money(n, cur) { return n === null || n === undefined ? '<span class="dr">Cost Data Required</span>' : esc(cur || '') + ' ' + Math.round(n).toLocaleString('en-US'); }
+  function badge(st) {
+    var cls = { 'Coverage Met': 'st-met', 'Coverage Gap': 'st-gap', 'Data Required': 'st-data', 'Manual Override': 'st-ovr', 'Closed': 'st-closed' }[st] || 'st-closed';
+    return '<span class="st ' + cls + '">' + esc(st) + '</span>';
+  }
+  function fmtOut(v, kind) {
+    switch (kind) {
+      case 'fte': return f2(v);
+      case 'h': return f0(v);
+      case 'int': return v === null || v === undefined ? '<span class="dr">Data Required</span>' : String(v);
+      case 'gap': return gap(v);
+      case 'status': return badge(v);
+      case 'occ': return v === null || v === undefined ? '—' : f1(v);
+      case 'shift': return v === null || v === undefined ? '—' : String(v);
+      default: return esc(v);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // State helpers
+  // ---------------------------------------------------------------------------
+  function unit(id) { for (var i = 0; i < App.state.units.length; i++) if (App.state.units[i].id === id) return App.state.units[i]; return null; }
+  function res(id) { for (var i = 0; i < App.result.units.length; i++) if (App.result.units[i].id === id) return App.result.units[i]; return null; }
+  function activeUnits(section) {
+    return App.state.units.filter(function (u) { return !C.bool(u.archived) && (!section || u.section === section); })
+      .sort(function (a, b) { return (Number(a.sortOrder) || 0) - (Number(b.sortOrder) || 0); });
+  }
+  function getPath(o, path) { var p = path.split('.'); for (var i = 0; i < p.length; i++) { if (o === null || o === undefined) return undefined; o = o[p[i]]; } return o; }
+  function setPath(o, path, v) {
+    var p = path.split('.');
+    for (var i = 0; i < p.length - 1; i++) { if (o[p[i]] === null || typeof o[p[i]] !== 'object') o[p[i]] = /^\d+$/.test(p[i + 1]) ? [] : {}; o = o[p[i]]; }
+    o[p[p.length - 1]] = v;
+  }
+  function ensureParams(u) { u.params = u.params || {}; if (!u.params[u.method]) u.params[u.method] = C.blankParams(u.method); return u.params[u.method]; }
+  function newId(prefix) { return prefix + Date.now().toString(36).toUpperCase() + Math.floor(Math.random() * 1296).toString(36).toUpperCase(); }
+  function issuesFor(unitId, field) {
+    return App.result.issues.filter(function (x) { return x.unitId === unitId && (!field || x.field === field) && x.level === 'error'; });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Recalculate + refresh
+  // ---------------------------------------------------------------------------
+  function recompute() {
+    App.result = C.calculate(App.state);
+    App.dirty = JSON.stringify(App.state) !== JSON.stringify(App.saved);
+    refreshChrome();
+  }
+
+  function refreshChrome() {
+    var r = App.result, sm = r.summary;
+    $('monthPill').textContent = (r.month ? r.month.ym + ' · ' + r.month.days + ' days · ' + r.month.fridays + ' Fridays' : 'Invalid month') +
+      ' · ' + (r.hours.hoursPerFTE ? r.hours.hoursPerFTE.toFixed(2) + ' h per FTE' : 'hours per FTE invalid');
+    var pill = $('savePill');
+    pill.textContent = App.saving ? 'Saving…' : App.dirty ? 'Unsaved changes' : 'All changes saved';
+    pill.className = 'pill' + (App.dirty ? ' dirty' : '');
+    $('btnSave').disabled = !App.dirty || App.saving;
+    var errs = r.issues.filter(function (x) { return x.level === 'error'; });
+    var html = '';
+    if (errs.length) html += '<div class="banner err"><b>' + errs.length + ' validation error(s) — saving is blocked until fixed.</b> ' +
+      errs.slice(0, 4).map(function (x) { return esc(x.scope + ': ' + x.message); }).join(' · ') + (errs.length > 4 ? ' · …see Settings → Data quality' : '') + '</div>';
+    if (sm.provisional) html += '<div class="banner warn"><b>Provisional results.</b> ' + esc(sm.provisionalReasons.slice(0, 5).join(' · ')) +
+      (sm.provisionalReasons.length > 5 ? ' · +' + (sm.provisionalReasons.length - 5) + ' more' : '') + '</div>';
+    $('banners').innerHTML = html;
+  }
+
+  /** Update calculated cells in place so the input being edited keeps focus. */
+  function refreshOutputs() {
+    var els = document.querySelectorAll('#page-' + App.page + ' [data-o]');
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i], parts = el.getAttribute('data-o').split('|'), v;
+      if (parts[0] === 'u') { var r = res(parts[1]); v = r ? r[parts[2]] : null; }
+      else if (parts[0] === 's') v = App.result.summary[parts[1]];
+      else if (parts[0] === 'h') v = App.result.hours[parts[1]];
+      el.innerHTML = fmtOut(v, el.getAttribute('data-k'));
+    }
+    var regions = document.querySelectorAll('#page-' + App.page + ' [data-region]');
+    for (var j = 0; j < regions.length; j++) {
+      var fn = REGIONS[regions[j].getAttribute('data-region')];
+      if (fn) regions[j].innerHTML = fn(regions[j].getAttribute('data-arg'));
+    }
+    markInvalid();
+  }
+
+  function markInvalid() {
+    var inputs = document.querySelectorAll('#page-' + App.page + ' [data-u][data-f]');
+    for (var i = 0; i < inputs.length; i++) {
+      var el = inputs[i], f = el.getAttribute('data-f'), key = f.split('.').pop();
+      var bad = App.result.issues.some(function (x) { return x.level === 'error' && x.unitId === el.getAttribute('data-u') && x.field === key; });
+      el.classList.toggle('bad', bad);
+    }
+    var sInputs = document.querySelectorAll('#page-settings [data-s]');
+    for (var j = 0; j < sInputs.length; j++) {
+      var k = sInputs[j].getAttribute('data-s');
+      sInputs[j].classList.toggle('bad', App.result.issues.some(function (x) { return x.level === 'error' && x.scope === 'Settings' && x.field === k; }));
+    }
+  }
+
+  function renderAll() { renderPage(App.page); }
+  function renderPage(p) {
+    var fn = { summary: renderSummary, inpatient: renderInpatient, other: renderOther, settings: renderSettings }[p];
+    $('page-' + p).innerHTML = fn();
+    refreshOutputs();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Input builders
+  // ---------------------------------------------------------------------------
+  function uIn(u, path, cls, attrs) {
+    var v = getPath(u, path);
+    return '<input type="text" inputmode="decimal" class="' + (cls || '') + '" data-u="' + esc(u.id) + '" data-f="' + esc(path) + '" value="' + esc(v === undefined ? '' : v) + '"' + (attrs || '') + '>';
+  }
+  function uTxt(u, path, cls) {
+    var v = getPath(u, path);
+    return '<input type="text" class="' + (cls || '') + '" data-u="' + esc(u.id) + '" data-f="' + esc(path) + '" value="' + esc(v === undefined ? '' : v) + '">';
+  }
+  function uChk(u, path, rerender) {
+    var v = getPath(u, path);
+    return '<input type="checkbox" data-u="' + esc(u.id) + '" data-f="' + esc(path) + '" data-t="bool"' + (rerender ? ' data-rr="1"' : '') + (C.bool(v) || v === undefined && path === 'isOpen' ? ' checked' : '') + '>';
+  }
+  function uSel(u, path, options, rerender) {
+    var v = getPath(u, path);
+    return '<select data-u="' + esc(u.id) + '" data-f="' + esc(path) + '"' + (rerender ? ' data-rr="1"' : '') + '>' +
+      options.map(function (o) { return '<option value="' + esc(o[0]) + '"' + (String(v) === String(o[0]) ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select>';
+  }
+  function out(kind, id, field, fmt, cls) { return '<td class="calc ' + (cls || '') + '" data-o="' + kind + '|' + esc(id) + '|' + field + '" data-k="' + fmt + '"></td>'; }
+  function methodOptions(section) {
+    return Object.keys(C.METHODS).filter(function (k) { return C.METHODS[k].section === section; }).map(function (k) { return [k, C.METHODS[k].label]; });
+  }
+  function field(u, f, prefix) {
+    var path = prefix + f.key;
+    if (f.type === 'bool') return '<label class="chk">' + uChk(u, path, false) + esc(f.label) + '</label>';
+    return '<label>' + esc(f.label) + uIn(u, path) + (f.help ? '<span class="help">' + esc(f.help) + '</span>' : '') + '</label>';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Inpatient page
+  // ---------------------------------------------------------------------------
+  function renderInpatient() {
+    var units = activeUnits('INPATIENT');
+    if (!App.sel.INPATIENT || !unit(App.sel.INPATIENT) || C.bool(unit(App.sel.INPATIENT).archived)) App.sel.INPATIENT = units.length ? units[0].id : null;
+    var h = '<div class="toolbar"><button type="button" data-act="add-unit" data-sec="INPATIENT">+ Add Unit</button>' +
+      '<span class="note">Blue cells are inputs; grey cells are calculated. Ratios and minimums are planning assumptions requiring local approval — not mandatory clinical standards.</span></div>';
+    h += '<div class="tablewrap"><table class="grid"><thead><tr>' +
+      '<th class="l">Unit</th><th>Open</th><th>Method</th><th>Operational beds</th><th>Occupancy %</th><th>Avg occupied beds</th><th>Patients per RN</th>' +
+      '<th>Min RN per shift</th><th>Hours/day (Sat–Thu)</th><th>Friday hours</th><th>Coverage hours / month</th><th>Avg RN coverage</th>' +
+      '<th>Required FTE</th><th>Establish-ment</th><th>Current RN HC</th><th>Current RN FTE</th><th>CNC FTE</th><th>Net gap FTE</th><th>Shift RN (whole)</th><th>Status</th><th></th></tr></thead><tbody>';
+    units.forEach(function (u) {
+      var r = res(u.id) || {};
+      var p = ensureParams(u), m = u.method;
+      h += '<tr data-row="' + esc(u.id) + '" class="' + (u.id === App.sel.INPATIENT ? 'sel ' : '') + (r.isOpen === false ? 'closed ' : '') + (r.counted === false ? 'excluded' : '') + '">' +
+        '<td class="l">' + uTxt(u, 'name', 'name') + '</td><td style="text-align:center">' + uChk(u, 'isOpen', true) + '</td>' +
+        '<td>' + uSel(u, 'method', [['RATIO', 'Ratio'], ['ACUITY', 'Acuity']], true) + '</td>' +
+        '<td>' + uIn(u, 'params.' + m + '.beds') + '</td>' +
+        (m === 'RATIO' ? '<td>' + uIn(u, 'params.RATIO.occupancyPct') + '</td>' : '<td class="calc note">groups</td>') +
+        out('u', u.id, 'occupied', 'occ') +
+        (m === 'RATIO' ? '<td>' + uIn(u, 'params.RATIO.patientsPerRN') + '</td>' : '<td class="calc"><button type="button" class="link" data-act="select" data-id="' + esc(u.id) + '">groups ▸</button></td>') +
+        '<td>' + uIn(u, 'minRNPerShift') + '</td><td>' + uIn(u, 'schedule.weekdayHours') + '</td><td>' + uIn(u, 'schedule.fridayHours') + '</td>' +
+        out('u', u.id, 'coverageHours', 'h') + out('u', u.id, 'avgConcurrentRN', 'occ') + out('u', u.id, 'requiredFTE', 'fte') + out('u', u.id, 'establishment', 'int') +
+        '<td>' + uIn(u, 'currentRNHeadcount') + '</td><td>' + uIn(u, 'currentRNFTE', '', ' placeholder="= HC"') + '</td>' +
+        out('u', u.id, 'cncFTE', 'fte') + out('u', u.id, 'netGap', 'gap') + out('u', u.id, 'shiftRN', 'shift') + out('u', u.id, 'status', 'status') +
+        '<td><button type="button" class="link" data-act="select" data-id="' + esc(u.id) + '">details ▸</button></td></tr>';
+    });
+    h += '</tbody><tfoot data-region="totals" data-arg="INPATIENT"></tfoot></table></div>';
+    h += '<p class="note">Average fractional RN coverage is used for monthly planning. "Shift RN (whole)" is whole nurses per shift from the actual or explicitly assumed shift census (default: rounded-up average occupied beds, shown in details).</p>';
+    if (App.sel.INPATIENT) h += renderDetail(unit(App.sel.INPATIENT));
+    return h;
+  }
+
+  function totalsRow(section) {
+    var rs = App.result.units.filter(function (r) { return r.section === section && r.counted; });
+    var known = rs.filter(function (r) { return r.requiredFTE !== null; });
+    var dr = rs.length - known.length;
+    var s = function (list, k) { return list.reduce(function (a, r) { return a + (r[k] || 0); }, 0); };
+    var blank = function (n) { return new Array(n + 1).join('<td></td>'); };
+    var label = '<td class="l">TOTAL — ' + rs.length + ' units counted' + (dr ? ' (' + dr + ' Data Required)' : '') + '</td>';
+    var core = '<td>' + f0(s(known, 'coverageHours')) + '</td>';
+    var tail = '<td>' + f2(C.round2(s(known, 'requiredFTE'))) + (dr ? '*' : '') + '</td><td>' + s(known, 'establishment') + '</td><td>' + s(rs, 'currentHC') + '</td>' +
+      '<td>' + f2(s(rs, 'currentFTE')) + '</td><td>' + f2(s(rs, 'cncFTE')) + '</td><td>' + gap(C.round2(s(known, 'netGap'))) + '</td>';
+    var cells = section === 'INPATIENT'
+      ? label + blank(4) + '<td>' + f1(s(rs, 'occupied')) + '</td>' + blank(4) + core + blank(1) + tail + blank(3)
+      : label + blank(6) + core + tail + blank(2);
+    return '<tr class="total">' + cells + '</tr>' +
+      (dr ? '<tr><td class="l note" colspan="21">* Excludes ' + dr + ' unit(s) with Data Required — total is provisional. Struck-through rows are excluded from totals.</td></tr>' : '');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Other & OPD page
+  // ---------------------------------------------------------------------------
+  function keyInputs(u) {
+    var p = (u.params || {})[u.method] || {}, n = C.num;
+    switch (u.method) {
+      case 'OR': return (p.rooms || '?') + ' rooms × ' + (p.rnPerRoom || '?') + ' RN';
+      case 'ER': return (p.periods || []).length + ' periods · ' + (p.workload || []).length + ' volume rows';
+      case 'DELIVERY': return (p.deliveriesPerMonth || '?') + ' deliveries × ' + (p.rnHoursPerDelivery || '?') + ' h';
+      case 'PROCEDURE': return (p.proceduresPerMonth || '?') + ' procedures × ' + (p.procedureMinutes || '?') + ' min';
+      case 'CSSD': return (p.rnPosts === '' || p.rnPosts === undefined ? '?' : p.rnPosts) + ' RN posts · ' + (p.setsPerMonth || '?') + ' sets';
+      case 'CLINIC': return (p.clinics || '?') + ' clinics × ' + (p.utilisationPct || '?') + '% × ' + (p.rnPerClinic || '?') + ' RN';
+      case 'ACTIVITY': return (p.activitiesPerMonth || '?') + ' activities × ' + (p.minutesPerActivity || '?') + ' min';
+      case 'POSTS': return (n(p.rnPosts) === null ? '?' : p.rnPosts) + ' RN posts';
+      default: return '';
+    }
+  }
+
+  function renderOther() {
+    var units = activeUnits('OTHER');
+    if (!App.sel.OTHER || !unit(App.sel.OTHER) || C.bool(unit(App.sel.OTHER).archived)) App.sel.OTHER = units.length ? units[0].id : null;
+    var h = '<div class="toolbar"><button type="button" data-act="add-unit" data-sec="OTHER">+ Add Unit</button>' +
+      '<span class="note">Each unit uses one workload method. Select a row\'s <b>details</b> to edit its workload inputs. Missing data shows "Data Required" — never zero.</span></div>';
+    h += '<div class="tablewrap"><table class="grid"><thead><tr><th class="l">Unit</th><th>Open</th><th>Method</th><th class="l">Key inputs</th>' +
+      '<th>Min RN (concurrent)</th><th>Hours/day (Sat–Thu)</th><th>Friday hours</th><th>Coverage hours / month</th><th>Required FTE</th><th>Establish-ment</th>' +
+      '<th>Current RN HC</th><th>Current RN FTE</th><th>CNC FTE</th><th>Net gap FTE</th><th>Status</th><th></th></tr></thead><tbody>';
+    units.forEach(function (u) {
+      var r = res(u.id) || {};
+      ensureParams(u);
+      h += '<tr data-row="' + esc(u.id) + '" class="' + (u.id === App.sel.OTHER ? 'sel ' : '') + (r.isOpen === false ? 'closed ' : '') + (r.counted === false ? 'excluded' : '') + '">' +
+        '<td class="l">' + uTxt(u, 'name', 'name') + '</td><td style="text-align:center">' + uChk(u, 'isOpen', true) + '</td>' +
+        '<td>' + uSel(u, 'method', methodOptions('OTHER'), true) + '</td>' +
+        '<td class="l calc" data-region="keyinputs" data-arg="' + esc(u.id) + '"></td>' +
+        '<td>' + uIn(u, 'minRNPerShift') + '</td>' +
+        (u.method === 'ER' ? '<td class="calc note">periods</td><td class="calc note">periods</td>' : '<td>' + uIn(u, 'schedule.weekdayHours') + '</td><td>' + uIn(u, 'schedule.fridayHours') + '</td>') +
+        out('u', u.id, 'coverageHours', 'h') + out('u', u.id, 'requiredFTE', 'fte') + out('u', u.id, 'establishment', 'int') +
+        '<td>' + uIn(u, 'currentRNHeadcount') + '</td><td>' + uIn(u, 'currentRNFTE', '', ' placeholder="= HC"') + '</td>' +
+        out('u', u.id, 'cncFTE', 'fte') + out('u', u.id, 'netGap', 'gap') + out('u', u.id, 'status', 'status') +
+        '<td><button type="button" class="link" data-act="select" data-id="' + esc(u.id) + '">details ▸</button></td></tr>';
+    });
+    h += '</tbody><tfoot data-region="totals" data-arg="OTHER"></tfoot></table></div>';
+    h += '<p class="note">For ER the minimum RN is set per time period in details; the unit-level "Min RN" is not used. OPD: choose clinic-based <b>or</b> activity-based — the two are never added together.</p>';
+    if (App.sel.OTHER) h += renderDetail(unit(App.sel.OTHER));
+    return h;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Unit detail panel (both pages)
+  // ---------------------------------------------------------------------------
+  function renderDetail(u) {
+    if (!u) return '';
+    var def = C.METHODS[u.method] || { fields: [] }, p = ensureParams(u), pre = 'params.' + u.method + '.';
+    var others = App.state.units.filter(function (x) { return x.id !== u.id && !C.bool(x.archived); });
+    var h = '<div class="detail"><h3>' + esc(u.name) + ' — ' + esc(def.label || u.method) + ' <span class="note">(ID ' + esc(u.id) + ')</span></h3><div class="cols2"><div>';
+    // Method inputs
+    if (def.fields.length) h += '<div class="form">' + def.fields.map(function (f) { return field(u, f, pre); }).join('') + '</div>';
+    Object.keys(def.tables || {}).forEach(function (tk) {
+      var t = def.tables[tk], rows = p[tk] || [];
+      h += '<h3>' + esc(t.label) + '</h3><div class="tablewrap"><table class="grid"><thead><tr>' +
+        t.columns.map(function (c) { return '<th' + (c.type === 'text' ? ' class="l"' : '') + '>' + esc(c.label) + '</th>'; }).join('') + '<th></th></tr></thead><tbody>';
+      rows.forEach(function (row, i) {
+        h += '<tr>' + t.columns.map(function (c) {
+          var path = pre + tk + '.' + i + '.' + c.key;
+          return '<td' + (c.type === 'text' ? ' class="l"' : '') + '>' + (c.type === 'text' ? uTxt(u, path, 'name') : uIn(u, path)) + '</td>';
+        }).join('') + '<td><button type="button" class="link" data-act="del-row" data-id="' + esc(u.id) + '" data-tk="' + tk + '" data-i="' + i + '">remove</button></td></tr>';
+      });
+      h += '</tbody></table></div><div class="toolbar"><button type="button" data-act="add-row" data-id="' + esc(u.id) + '" data-tk="' + tk + '">+ Add row</button></div>';
+    });
+    if (u.method === 'ACUITY') h += '<p class="note">Each patient must belong to exactly one group. The sum of group patients is the average occupied census and cannot exceed operational beds.</p>';
+    if (u.method === 'CSSD') h += '<div data-region="tech" data-arg="' + esc(u.id) + '"></div>';
+    // Schedule
+    if (u.method !== 'ER') {
+      var days = C.NON_FRIDAY_DAYS, open = String((u.schedule || {}).openDays || '').split(/[\s,]+/);
+      h += '<h3>Opening schedule</h3><div class="form"><label>Regular open days (Friday set separately)<span class="days">' + days.map(function (d) {
+        return '<label class="chk"><input type="checkbox" data-days="' + esc(u.id) + '" value="' + d + '"' + (open.indexOf(d) >= 0 ? ' checked' : '') + '>' + d + '</label>';
+      }).join('') + '</span></label>' +
+        '<label>Hours per regular open day' + uIn(u, 'schedule.weekdayHours') + '</label>' +
+        '<label>Friday hours (0 = closed)' + uIn(u, 'schedule.fridayHours') + '</label>' +
+        '<label>Public holiday hours' + uIn(u, 'schedule.holidayHours') + '<span class="help">Used when Settings has public holidays in the month.</span></label>' +
+        '<label>' + (u.section === 'INPATIENT' ? 'Minimum RN per shift' : 'Minimum RN during opening hours') + uIn(u, 'minRNPerShift') + '<span class="help">Unit-specific planning assumption. Blank = Data Required.</span></label></div>';
+    }
+    h += '</div><div>';
+    // Staffing, override, relation
+    h += '<h3>Staffing and overrides</h3><div class="form">' +
+      '<label>Current RN headcount' + uIn(u, 'currentRNHeadcount') + '</label>' +
+      '<label>Current RN FTE' + uIn(u, 'currentRNFTE', '', ' placeholder="blank = headcount"') + '<span class="help">Enter separately when part-time contracts exist.</span></label>' +
+      '<label>Overtime-eligible RN headcount' + uIn(u, 'otEligibleHeadcount', '', ' placeholder="default from Settings %"') + '</label>' +
+      '<label>Manual required-FTE override' + uIn(u, 'manualOverrideFTE') + '<span class="help">Only when reliable workload data is unavailable. A reason is mandatory.</span></label>' +
+      '<label>Override reason' + uTxt(u, 'manualOverrideReason') + '</label></div>';
+    h += '<h3>Separate beds or subset / duplicate?</h3><div class="form">' +
+      '<label>Relationship' + uSel(u, 'relation.type', [['', 'None'], ['SUBSET_OF', 'Subset of…'], ['POSSIBLE_DUPLICATE_OF', 'Possible duplicate of…']], true) + '</label>';
+    if (u.relation && u.relation.type) {
+      h += '<label>Related unit' + uSel(u, 'relation.unitId', [['', '— select —']].concat(others.map(function (x) { return [x.id, x.name]; })), true) + '</label>' +
+        '<label>Resolution' + uSel(u, 'relation.resolution', [['UNRESOLVED', 'Unresolved (count, mark provisional)'], ['SEPARATE', 'Confirmed separate (count)'], ['EXCLUDE', 'Confirmed subset/duplicate (exclude from totals)']], true) + '</label>';
+    }
+    h += '<label>Notes<textarea data-u="' + esc(u.id) + '" data-f="notes">' + esc(u.notes || '') + '</textarea></label></div>';
+    h += '<h3>Calculation</h3><div data-region="calc" data-arg="' + esc(u.id) + '"></div>';
+    h += '<div class="toolbar" style="margin-top:12px"><button type="button" class="danger" data-act="archive" data-id="' + esc(u.id) + '">Archive Unit</button></div>';
+    h += '</div></div></div>';
+    return h;
+  }
+
+  function calcRegion(id) {
+    var r = res(id); if (!r) return '';
+    var h = '';
+    if (r.missing.length) h += '<div class="banner warn" style="margin:0 0 6px">Data Required: ' + esc(r.missing.join('; ')) + '</div>';
+    h += '<ul class="lines">' + r.lines.map(function (l) { return '<li>' + esc(l) + '</li>'; }).join('') + '</ul>';
+    if (r.requiredFTE !== null) {
+      h += '<ul class="lines"><li>Required FTE = ' + f0(r.coverageHours) + ' h ÷ ' + App.result.hours.hoursPerFTE.toFixed(2) + ' h per FTE = <b>' + f2(r.requiredFTE) + '</b> (establishment ' + r.establishment + ')</li>' +
+        '<li>Net gap = current ' + f2(r.currentFTE) + (r.cncFTE ? ' + CNC ' + f2(r.cncFTE) : '') + ' − required ' + f2(r.requiredFTE) + ' = ' + gap(r.netGap) + '</li>';
+      if (r.shiftCensus !== null && r.shiftCensus !== undefined) h += '<li>Shift staffing: census ' + r.shiftCensus + (r.shiftCensusAssumed ? ' (assumed: rounded-up average)' : ' (entered)') + ' → ' + r.shiftRN + ' whole RN per shift</li>';
+      if (r.uncoveredHours !== null) h += '<li>Uncovered hours after confirmed transfers: ' + f0(r.uncoveredHours) + '; feasible overtime: ' + (r.feasibleOT === null ? '<span class="dr">Data Required</span>' : f0(r.feasibleOT)) + '</li>';
+      h += '</ul>';
+    }
+    if (r.notes.length) h += '<ul class="lines note">' + r.notes.map(function (n) { return '<li>' + esc(n) + '</li>'; }).join('') + '</ul>';
+    if (r.status === S.MET) h += '<p class="note">"Coverage Met" means the entered planning assumptions are met. It is not a certification of clinical safety.</p>';
+    return h;
+  }
+
+  function techRegion(id) {
+    var r = res(id); if (!r || !r.technicians) return '';
+    var t = r.technicians;
+    return '<div class="explain"><b>CSSD technicians (separate from RN):</b> required ' + (t.requiredFTE === null ? '<span class="dr">Data Required</span> (sets and minutes per set)' : f2(t.requiredFTE) + ' FTE') +
+      ' · current ' + (t.currentHC === null ? '—' : t.currentHC) + ' headcount. Technician work is not counted as RN demand.</div>';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Summary page
+  // ---------------------------------------------------------------------------
+  function renderSummary() {
+    var h = '<div data-region="cards"></div>';
+    h += '<h2>Units</h2><div class="tablewrap" data-region="unitsTable"></div>';
+    h += '<h2>Transfers</h2><p class="note">Only transfers with confirmed competency and coverage compatibility are counted, and never if they would create a shortage in the source unit. Evaluated top to bottom.</p>';
+    h += '<div class="tablewrap"><table class="grid"><thead><tr><th class="l">Source unit</th><th class="l">Destination unit</th><th>FTE</th><th>Competency confirmed</th><th>Coverage compatible</th><th class="l">Notes</th><th class="l">Counted?</th><th></th></tr></thead><tbody>';
+    var opts = activeUnits().map(function (u) { return [u.id, u.name]; });
+    App.state.transfers.forEach(function (t, i) {
+      var sel = function (f) {
+        return '<select data-tr="' + i + '" data-f="' + f + '"><option value="">— select —</option>' + opts.map(function (o) { return '<option value="' + esc(o[0]) + '"' + (t[f] === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select>';
+      };
+      h += '<tr><td class="l">' + sel('sourceUnitId') + '</td><td class="l">' + sel('destUnitId') + '</td>' +
+        '<td><input type="text" inputmode="decimal" data-tr="' + i + '" data-f="fte" value="' + esc(t.fte) + '"></td>' +
+        '<td style="text-align:center"><input type="checkbox" data-tr="' + i + '" data-f="competencyConfirmed" data-t="bool"' + (t.competencyConfirmed ? ' checked' : '') + '></td>' +
+        '<td style="text-align:center"><input type="checkbox" data-tr="' + i + '" data-f="coverageCompatible" data-t="bool"' + (t.coverageCompatible ? ' checked' : '') + '></td>' +
+        '<td class="l"><input type="text" class="name" data-tr="' + i + '" data-f="notes" value="' + esc(t.notes) + '"></td>' +
+        '<td class="l calc" data-region="transfer" data-arg="' + i + '"></td>' +
+        '<td><button type="button" class="link" data-act="del-transfer" data-i="' + i + '">delete</button></td></tr>';
+    });
+    if (!App.state.transfers.length) h += '<tr><td class="l note" colspan="8">No transfers recorded.</td></tr>';
+    h += '</tbody></table></div><div class="toolbar"><button type="button" data-act="add-transfer">+ Add transfer</button></div>';
+    h += '<h2>Overtime and cost options</h2><div data-region="costs"></div>';
+    h += '<h2>Reconciliation checks</h2><div data-region="checks"></div>';
+    h += '<h2>Method</h2><div class="explain">Available coverage hours per FTE = scheduled hours − leave − training − other unavailable hours (or scheduled ÷ (1 + uplift) in relief-uplift mode; never both). ' +
+      'Required FTE = required coverage hours ÷ hours per FTE (2 decimals); establishment is rounded up per unit. Net gap = Current − Required. ' +
+      'Recruitment need = sum of unit shortages remaining after valid transfers. PCA/PCT headcount is never subtracted from RN requirements. ' +
+      'Uncovered hours = MAX(0, required coverage hours − eligible available coverage hours). All defaults are planning assumptions requiring local approval; results do not certify clinical safety.</div>';
+    return h;
+  }
+
+  function cardsRegion() {
+    var sm = App.result.summary, prov = sm.provisional ? ' <span class="note">(provisional)</span>' : '';
+    function card(k, v, s, cls) { return '<div class="card ' + (cls || '') + '"><div class="k">' + k + '</div><div class="v">' + v + '</div><div class="s">' + (s || '') + '</div></div>'; }
+    return '<div class="cards">' +
+      card('Current RN', sm.currentRNHC.toLocaleString('en-US'), 'headcount · ' + f2(sm.currentRNFTE) + ' FTE') +
+      card('Required RN FTE' + prov, f2(sm.requiredRNFTE), 'establishment ' + sm.establishment + ' posts' + (sm.unitsDataRequired ? ' · excludes ' + sm.unitsDataRequired + ' Data Required unit(s)' : '')) +
+      card('Net gap (Current − Required)', gap(sm.netGapFTE), 'FTE, units with known requirement', sm.netGapFTE < 0 ? 'bad' : 'good') +
+      card('Unit shortages', f2(sm.shortageFTE), 'FTE, sum of short units', sm.shortageFTE > 0 ? 'bad' : '') +
+      card('Unit surpluses', f2(sm.surplusFTE), 'FTE — not automatically transferable') +
+      card('Confirmed transfers', f2(sm.confirmedTransferFTE), sm.invalidTransfers ? sm.invalidTransfers + ' transfer(s) not counted' : 'eligible and compatible only') +
+      card('Recruitment need' + prov, f2(sm.recruitmentFTE), 'FTE · ' + sm.recruitmentPosts + ' whole posts', sm.recruitmentFTE > 0 ? 'bad' : 'good') +
+      card('Uncovered hours', f0(sm.uncoveredHours), 'per month after transfers', sm.uncoveredHours > 0 ? 'warn' : '') +
+      card('Feasible overtime', sm.feasibleOTHours === null ? '<span class="dr">Data Required</span>' : f0(sm.feasibleOTHours), sm.feasibleOTHours === null ? 'enter max OT hours in Settings' : 'hours; remaining uncovered ' + f0(sm.uncoveredAfterOTHours)) +
+      card('PCA / PCT', sm.pcaHC, 'headcount · not RN capacity') +
+      card('CNC', sm.cncHC, 'headcount · direct-care credit ' + f2(sm.cncContributionFTE) + ' FTE') +
+      card('Total workforce', sm.totalWorkforceHC.toLocaleString('en-US'), 'headcount: RN + PCA/PCT + CNC') +
+      card('Data completeness', sm.completenessPct + '%', esc(sm.dataStatus), sm.unitsDataRequired ? 'warn' : 'good') +
+      '</div>';
+  }
+
+  function unitsTableRegion() {
+    var h = '<table class="grid"><thead><tr><th class="l">Unit</th><th class="l">Area</th><th class="l">Method</th><th>Required FTE</th><th>Current RN FTE</th><th>CNC FTE</th><th>Net gap</th>' +
+      '<th>Transfer out</th><th>Transfer in</th><th>Remaining shortage</th><th>Uncovered hours</th><th>Feasible OT hours</th><th>Status</th></tr></thead><tbody>';
+    App.result.units.forEach(function (r) {
+      h += '<tr class="' + (r.counted ? '' : 'excluded') + '"><td class="l">' + esc(r.name) + '</td><td class="l">' + (r.section === 'INPATIENT' ? 'Inpatient' : 'Other & OPD') + '</td><td class="l">' + esc(r.methodLabel) + '</td>' +
+        '<td>' + f2(r.requiredFTE) + '</td><td>' + f2(r.currentFTE) + '</td><td>' + f2(r.cncFTE) + '</td><td>' + gap(r.netGap) + '</td>' +
+        '<td>' + f2(r.transferOut) + '</td><td>' + f2(r.transferIn) + '</td><td>' + (r.remainingShortage === null ? f2(null) : f2(r.remainingShortage)) + '</td>' +
+        '<td>' + f0(r.uncoveredHours) + '</td><td>' + (r.feasibleOT === null || r.feasibleOT === undefined ? (r.requiredFTE === null ? f0(null) : '<span class="dr">Data Required</span>') : f0(r.feasibleOT)) + '</td>' +
+        '<td class="l">' + badge(r.status) + (r.counted ? '' : ' <span class="note">excluded</span>') + '</td></tr>';
+    });
+    var sm = App.result.summary;
+    h += '<tr class="total"><td class="l" colspan="3">TOTAL (counted units)</td><td>' + f2(sm.requiredRNFTE) + '</td><td>' + f2(sm.currentRNFTE) + '</td><td>' + f2(sm.cncContributionFTE) + '</td><td>' + gap(sm.netGapFTE) + '</td>' +
+      '<td>' + f2(sm.confirmedTransferFTE) + '</td><td>' + f2(sm.confirmedTransferFTE) + '</td><td>' + f2(sm.recruitmentFTE) + '</td><td>' + f0(sm.uncoveredHours) + '</td><td>' +
+      (sm.feasibleOTHours === null ? '<span class="dr">Data Required</span>' : f0(sm.feasibleOTHours)) + '</td><td class="l">' + (sm.provisional ? '<span class="st st-data">Provisional</span>' : '') + '</td></tr>';
+    if (sm.currentFTEInDataRequiredUnits) h += '<tr><td class="l note" colspan="13">Net gap excludes ' + f2(sm.currentFTEInDataRequiredUnits) + ' current RN FTE in units whose requirement is Data Required.</td></tr>';
+    return h + '</tbody></table>';
+  }
+
+  function transferRegion(i) {
+    var t = App.result.transfers[Number(i)];
+    if (!t) return '';
+    var notes = t.reasons.filter(function (x) { return x.indexOf('Note:') === 0; });
+    return t.valid ? '<span class="st st-met">Counted</span> <span class="note">' + esc(notes.join(' ')) + '</span>'
+      : '<span class="st st-gap">Not counted</span> <span class="note">' + esc(t.reasons.join('; ')) + '</span>';
+  }
+
+  function costsRegion() {
+    var c = App.result.costs;
+    var h = '<div class="tablewrap"><table class="grid"><thead><tr><th class="l">Option</th><th>Quantity</th><th class="l">Unit</th><th>Monthly cost</th><th>One-off cost</th><th>Cost per covered hour</th><th class="l">Notes</th></tr></thead><tbody>';
+    c.options.forEach(function (o) {
+      h += '<tr><td class="l">' + esc(o.option) + '</td><td>' + (o.quantity === null ? '<span class="dr">Data Required</span>' : o.unit === 'FTE' ? f2(o.quantity) : f0(o.quantity)) + '</td><td class="l">' + o.unit + '</td>' +
+        '<td>' + (o.option === 'Confirmed transfers' ? 'No additional payroll' : money(o.monthlyCost, c.currency)) + '</td>' +
+        '<td>' + (o.option === 'Confirmed transfers' ? money(o.oneOffCost, c.currency) : '—') + '</td>' +
+        '<td>' + (o.option === 'Confirmed transfers' ? '—' : money(o.costPerHour, c.currency)) + '</td><td class="l note" style="white-space:normal">' + esc(o.note) + '</td></tr>';
+    });
+    h += '</tbody></table></div><h3>Current workforce cost</h3><div class="tablewrap"><table class="grid"><thead><tr><th class="l">Category</th><th>FTE (or headcount)</th><th>Monthly cost</th></tr></thead><tbody>';
+    c.current.forEach(function (x) { h += '<tr><td class="l">' + x.category + '</td><td>' + f2(x.fte) + '</td><td>' + money(x.monthlyCost, c.currency) + '</td></tr>'; });
+    h += '</tbody></table></div><p class="note">Overtime is capped by eligible staff and the entered limit and does not solve every shortage. Do not reduce staffing below approved coverage or competency requirements.</p>';
+    return h;
+  }
+
+  function checksRegion() {
+    return '<div class="tablewrap"><table class="grid"><thead><tr><th class="l">Check</th><th>Calculated</th><th>Reported</th><th class="l">Status</th></tr></thead><tbody>' +
+      App.result.checks.map(function (c) { return '<tr><td class="l">' + esc(c.label) + '</td><td>' + f2(c.calculated) + '</td><td>' + f2(c.reported) + '</td><td class="l">' + (c.ok ? '<span class="st st-met">OK</span>' : '<span class="st st-gap">ERROR</span>') + '</td></tr>'; }).join('') +
+      '</tbody></table></div>';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Settings page
+  // ---------------------------------------------------------------------------
+  function renderSettings() {
+    var s = App.state.settings, groups = {};
+    C.SETTINGS_FIELDS.forEach(function (f) { (groups[f.group] = groups[f.group] || []).push(f); });
+    var h = '<div class="banner info" style="margin:0 0 10px">All values are planning assumptions requiring local approval. Imported ratios are not mandatory clinical standards.</div>';
+    Object.keys(groups).forEach(function (g) {
+      h += '<h2>' + esc(g) + '</h2><div class="form">';
+      groups[g].forEach(function (f) {
+        var v = s[f.key] === undefined ? '' : s[f.key];
+        if (f.key === 'fteMode') {
+          h += '<label style="grid-column:1/-1">FTE method (only one can be active)<span class="days">' +
+            '<label class="chk"><input type="radio" name="fteMode" data-s="fteMode" value="DEDUCT"' + (v === 'DEDUCT' ? ' checked' : '') + '> Deduct unavailable hours</label>' +
+            '<label class="chk"><input type="radio" name="fteMode" data-s="fteMode" value="UPLIFT"' + (v === 'UPLIFT' ? ' checked' : '') + '> Relief uplift</label></span>' +
+            '<span class="explain"><b>Deduct:</b> Required FTE = coverage hours ÷ (scheduled − leave − training − other). Absence is covered because each FTE is credited only with the hours it is actually available. <b>Relief uplift:</b> Required FTE = coverage hours ÷ scheduled hours × (1 + uplift). ' +
+            'Use one or the other — applying an uplift after deducting leave would count absence twice.</span></label>';
+          return;
+        }
+        var type = f.type === 'month' ? 'month' : 'text';
+        h += '<label>' + esc(f.label) + '<input type="' + type + '"' + (f.type === 'number' ? ' inputmode="decimal"' : '') + ' data-s="' + f.key + '" value="' + esc(v) + '"' + (f.type === 'month' ? ' data-rr="1"' : '') + '>' +
+          (f.help ? '<span class="help">' + esc(f.help) + '</span>' : '') + '</label>';
+      });
+      h += '</div>';
+      if (g === 'Hours per FTE') h += '<div data-region="hours" style="margin-top:8px"></div>';
+    });
+    // CNC contributions
+    h += '<h2>CNC direct-care contributions</h2><p class="note">A CNC adds RN capacity to a unit only when qualification is confirmed, the unit is assigned and actual direct-care hours per month are entered. Supervision/administrative hours are excluded. Each CNC (employee reference) can be credited with at most one FTE across all units.</p>';
+    h += '<div class="tablewrap"><table class="grid"><thead><tr><th class="l">CNC employee ref</th><th class="l">Unit</th><th>Qualified for direct care</th><th>Total hours / month</th><th>Supervision / admin hours</th><th>Direct-care hours</th><th class="l">Notes</th><th class="l">Credited?</th><th></th></tr></thead><tbody>';
+    var opts = activeUnits().map(function (u) { return [u.id, u.name]; });
+    App.state.cncContributions.forEach(function (c, i) {
+      h += '<tr><td class="l"><input type="text" class="name" data-cnc="' + i + '" data-f="cncRef" value="' + esc(c.cncRef) + '"></td>' +
+        '<td class="l"><select data-cnc="' + i + '" data-f="unitId"><option value="">— select —</option>' + opts.map(function (o) { return '<option value="' + esc(o[0]) + '"' + (c.unitId === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select></td>' +
+        '<td style="text-align:center"><input type="checkbox" data-cnc="' + i + '" data-f="qualified" data-t="bool"' + (c.qualified ? ' checked' : '') + '></td>' +
+        ['totalHours', 'adminHours', 'directCareHours'].map(function (k) { return '<td><input type="text" inputmode="decimal" data-cnc="' + i + '" data-f="' + k + '" value="' + esc(c[k]) + '"></td>'; }).join('') +
+        '<td class="l"><input type="text" class="name" data-cnc="' + i + '" data-f="notes" value="' + esc(c.notes) + '"></td>' +
+        '<td class="l calc" data-region="cnc" data-arg="' + i + '"></td><td><button type="button" class="link" data-act="del-cnc" data-i="' + i + '">delete</button></td></tr>';
+    });
+    if (!App.state.cncContributions.length) h += '<tr><td class="l note" colspan="9">No CNC direct-care contributions recorded.</td></tr>';
+    h += '</tbody></table></div><div class="toolbar"><button type="button" data-act="add-cnc">+ Add CNC contribution</button></div>';
+    // Archived units
+    var arch = App.state.units.filter(function (u) { return C.bool(u.archived); });
+    h += '<h2>Archived units</h2>' + (arch.length ? '<div class="tablewrap"><table class="grid"><tbody>' + arch.map(function (u) {
+      return '<tr><td class="l">' + esc(u.name) + ' <span class="note">' + esc(u.id) + '</span></td><td><button type="button" data-act="restore" data-id="' + esc(u.id) + '">Restore</button></td></tr>';
+    }).join('') + '</tbody></table></div>' : '<p class="note">None. Archived units keep their saved data and are excluded from calculations.</p>');
+    h += '<h2>Data quality</h2><div data-region="issues"></div>';
+    return h;
+  }
+
+  function hoursRegion() {
+    var hm = App.result.hours, mi = App.result.month;
+    if (!mi) return '<div class="banner err" style="margin:0">Enter a valid reporting month.</div>';
+    return '<div class="explain">' + esc(mi.ym) + ': ' + mi.days + ' calendar days, ' + mi.fridays + ' Fridays. Scheduled hours per FTE: <b>' + f2(hm.scheduledHours) + '</b> (' + esc(hm.scheduledSource) + '). ' +
+      (hm.mode === 'DEDUCT'
+        ? 'Unavailable: ' + f2(hm.unavailableHours) + ' h → available coverage hours per FTE: <b>' + f2(hm.hoursPerFTE) + '</b> (equivalent to a ' + f1(hm.equivalentUpliftPct) + '% uplift — do not add an uplift as well).'
+        : 'Relief uplift ' + f1(hm.equivalentUpliftPct) + '% → effective hours per FTE: <b>' + f2(hm.hoursPerFTE) + '</b>. Leave/training/other fields are ignored in this mode.') + '</div>';
+  }
+
+  function issuesRegion() {
+    var is = App.result.issues;
+    if (!is.length) return '<p class="note">No validation issues.</p>';
+    return '<ul class="lines issues">' + is.map(function (x) { return '<li class="' + x.level + '"><b>' + x.level.toUpperCase() + '</b> ' + esc(x.scope) + ': ' + esc(x.message) + '</li>'; }).join('') + '</ul>';
+  }
+
+  function cncRegion(i) {
+    var c = App.result.cnc[Number(i)]; if (!c) return '';
+    var r = res(c.unitId);
+    return c.eligible ? '<span class="st st-met">' + f0(c.directCareHours) + ' h</span> <span class="note">' + (r ? f2(c.directCareHours / App.result.hours.hoursPerFTE) + ' FTE' : '') + '</span>'
+      : '<span class="st st-data">Not credited</span> <span class="note">' + esc(c.reasons.join('; ')) + '</span>';
+  }
+
+  var REGIONS = {
+    totals: totalsRow, keyinputs: function (id) { return esc(keyInputs(unit(id))); }, calc: calcRegion, tech: techRegion,
+    cards: cardsRegion, unitsTable: unitsTableRegion, transfer: transferRegion, costs: costsRegion, checks: checksRegion,
+    hours: hoursRegion, issues: issuesRegion, cnc: cncRegion
+  };
+
+  // ---------------------------------------------------------------------------
+  // Events
+  // ---------------------------------------------------------------------------
+  function onEdit(e) {
+    var el = e.target, rr = el.hasAttribute('data-rr'), val = el.getAttribute('data-t') === 'bool' ? el.checked : el.value;
+    if (el.hasAttribute('data-u')) {
+      var u = unit(el.getAttribute('data-u')), path = el.getAttribute('data-f');
+      if (!u) return;
+      setPath(u, path, val);
+      if (path === 'method') { ensureParams(u); rr = true; }
+      Array.prototype.forEach.call(document.querySelectorAll('[data-u="' + u.id + '"][data-f="' + path + '"]'), function (x) {
+        if (x !== el && x.type !== 'checkbox') x.value = val;
+      });
+    } else if (el.hasAttribute('data-days')) {
+      var uu = unit(el.getAttribute('data-days'));
+      var boxes = document.querySelectorAll('[data-days="' + el.getAttribute('data-days') + '"]');
+      uu.schedule = uu.schedule || {};
+      uu.schedule.openDays = Array.prototype.filter.call(boxes, function (b) { return b.checked; }).map(function (b) { return b.value; }).join(',');
+    } else if (el.hasAttribute('data-s')) {
+      App.state.settings[el.getAttribute('data-s')] = val;
+      if (el.type === 'radio') rr = true;
+    } else if (el.hasAttribute('data-tr')) {
+      App.state.transfers[Number(el.getAttribute('data-tr'))][el.getAttribute('data-f')] = val;
+    } else if (el.hasAttribute('data-cnc')) {
+      App.state.cncContributions[Number(el.getAttribute('data-cnc'))][el.getAttribute('data-f')] = val;
+    } else return;
+    recompute();
+    if (rr && e.type === 'change') renderAll(); else refreshOutputs();
+  }
+
+  function onClick(e) {
+    var b = e.target.closest('[data-act], [data-page]');
+    if (!b) return;
+    if (b.hasAttribute('data-page')) return showPage(b.getAttribute('data-page'));
+    var act = b.getAttribute('data-act'), id = b.getAttribute('data-id'), i = Number(b.getAttribute('data-i'));
+    if (act === 'select') { var u = unit(id); App.sel[u.section] = id; renderAll(); var d = document.querySelector('#page-' + App.page + ' .detail'); if (d) d.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+    else if (act === 'add-unit') addUnit(b.getAttribute('data-sec'));
+    else if (act === 'archive') archiveUnit(id);
+    else if (act === 'restore') { unit(id).archived = false; recompute(); renderAll(); toast('Restored — remember to Save.'); }
+    else if (act === 'add-row') { var uu = unit(id), p = ensureParams(uu), tk = b.getAttribute('data-tk'); p[tk] = p[tk] || []; p[tk].push({}); recompute(); renderAll(); }
+    else if (act === 'del-row') confirmBox('Remove row', 'Remove this row from ' + esc(unit(id).name) + '?', function () { ensureParams(unit(id))[b.getAttribute('data-tk')].splice(i, 1); recompute(); renderAll(); });
+    else if (act === 'add-transfer') { App.state.transfers.push({ id: newId('T-'), sourceUnitId: '', destUnitId: '', fte: '', competencyConfirmed: false, coverageCompatible: false, notes: '' }); recompute(); renderAll(); }
+    else if (act === 'del-transfer') confirmBox('Delete transfer', 'Delete transfer row ' + (i + 1) + '?', function () { App.state.transfers.splice(i, 1); recompute(); renderAll(); });
+    else if (act === 'add-cnc') { App.state.cncContributions.push({ id: newId('C-'), cncRef: '', unitId: '', qualified: false, totalHours: '', adminHours: '', directCareHours: '', notes: '' }); recompute(); renderAll(); }
+    else if (act === 'del-cnc') confirmBox('Delete CNC contribution', 'Delete CNC row ' + (i + 1) + '?', function () { App.state.cncContributions.splice(i, 1); recompute(); renderAll(); });
+  }
+
+  function showPage(p) {
+    App.page = p;
+    Array.prototype.forEach.call(document.querySelectorAll('#tabs button'), function (b) { b.classList.toggle('active', b.getAttribute('data-page') === p); });
+    Array.prototype.forEach.call(document.querySelectorAll('.page'), function (s) { s.classList.toggle('active', s.id === 'page-' + p); });
+    renderAll();
+  }
+
+  function addUnit(section) {
+    var opts = methodOptions(section).map(function (o) { return '<option value="' + o[0] + '">' + esc(o[1]) + '</option>'; }).join('');
+    confirmBox('Add ' + (section === 'INPATIENT' ? 'inpatient' : 'other / OPD') + ' unit',
+      '<div class="form" style="grid-template-columns:1fr"><label>Unit name<input type="text" id="newUnitName"></label><label>Workload method<select id="newUnitMethod">' + opts + '</select></label></div>',
+      function () {
+        var name = ($('newUnitName').value || '').trim();
+        if (!name) { toast('Enter a unit name.'); return false; }
+        if (App.state.units.some(function (x) { return !C.bool(x.archived) && C.normName(x.name) === C.normName(name); })) { toast('A unit with that name already exists.'); return false; }
+        var u = C.newUnit(newId('U-'), name, section, $('newUnitMethod').value);
+        u.sortOrder = App.state.units.reduce(function (m, x) { return Math.max(m, Number(x.sortOrder) || 0); }, 0) + 1;
+        App.state.units.push(u);
+        App.sel[section] = u.id;
+        recompute(); renderAll();
+        toast('Unit added — enter its data, then Save.');
+      }, 'Add Unit');
+  }
+
+  function archiveUnit(id) {
+    var u = unit(id);
+    var refs = App.state.transfers.filter(function (t) { return t.sourceUnitId === id || t.destUnitId === id; }).length;
+    confirmBox('Archive unit', 'Archive <b>' + esc(u.name) + '</b>? It will be excluded from all calculations and totals. Its saved data is kept and it can be restored from Settings.' +
+      (refs ? '<br><br>' + refs + ' transfer(s) reference this unit and will no longer be counted.' : ''), function () {
+      u.archived = true; recompute(); renderAll(); toast('Archived — remember to Save.');
+    }, 'Archive');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Modal / toast
+  // ---------------------------------------------------------------------------
+  var modalCb = null;
+  function confirmBox(title, bodyHtml, onOk, okLabel) {
+    $('modalTitle').textContent = title;
+    $('modalBody').innerHTML = bodyHtml;
+    $('modalOk').textContent = okLabel || 'OK';
+    modalCb = onOk;
+    $('modalBg').classList.add('open');
+    var first = $('modalBody').querySelector('input'); if (first) first.focus();
+  }
+  function closeModal() { $('modalBg').classList.remove('open'); modalCb = null; }
+  var toastTimer = null;
+  function toast(msg, ms) { var t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.classList.remove('show'); }, ms || 3500); }
+
+  // ---------------------------------------------------------------------------
+  // Server calls
+  // ---------------------------------------------------------------------------
+  function load() {
+    google.script.run.withSuccessHandler(onLoaded).withFailureHandler(function (err) {
+      $('page-summary').innerHTML = '<div class="banner err">Could not load data: ' + esc(err && err.message || err) + '</div>';
+    }).getAppData();
+  }
+  function onLoaded(data) {
+    App.saved = C.clone(data.state); App.state = C.clone(data.state); App.revision = data.revision;
+    App.savedInfo = data.savedAt ? 'Saved ' + data.savedAt.replace('T', ' ').slice(0, 16) + (data.savedBy ? ' by ' + data.savedBy : '') : '';
+    recompute(); renderAll();
+  }
+  function save() {
+    var errs = App.result.issues.filter(function (x) { return x.level === 'error'; });
+    if (errs.length) {
+      confirmBox('Cannot save', '<p>Fix these validation errors first:</p><ul class="lines issues">' + errs.map(function (x) { return '<li class="error">' + esc(x.scope + ': ' + x.message) + '</li>'; }).join('') + '</ul>', function () {}, 'Close');
+      return;
+    }
+    App.saving = true; refreshChrome();
+    google.script.run.withSuccessHandler(function (resp) {
+      App.saving = false;
+      if (resp && resp.ok) { onLoaded(resp.data); toast('Saved.' + (resp.warnings ? ' ' + resp.warnings + ' warning(s) — see Settings → Data quality.' : '')); }
+      else {
+        refreshChrome();
+        confirmBox(resp && resp.conflict ? 'Save conflict' : 'Save rejected by server validation',
+          '<ul class="lines issues">' + ((resp && resp.errors) || ['Unknown error']).map(function (m) { return '<li class="error">' + esc(m) + '</li>'; }).join('') + '</ul>', function () {}, 'Close');
+      }
+    }).withFailureHandler(function (err) {
+      App.saving = false; refreshChrome();
+      toast('Save failed: ' + (err && err.message || err), 8000);
+    }).saveAppData({ state: App.state, revision: App.revision });
+  }
+  function resetToSaved() {
+    var go = function () { $('savePill').textContent = 'Reloading…'; load(); toast('Reloaded the saved data.'); };
+    if (App.dirty) confirmBox('Reset to Saved', 'Discard all unsaved changes and reload the last saved data?', go, 'Discard changes');
+    else go();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Boot
+  // ---------------------------------------------------------------------------
+  document.addEventListener('input', function (e) { if (e.target.closest('main')) onEdit(e); });
+  document.addEventListener('change', function (e) { if (e.target.closest('main')) onEdit(e); });
+  document.addEventListener('click', function (e) { if (!e.target.closest('.modal-bg')) onClick(e); });
+  $('btnSave').addEventListener('click', save);
+  $('btnReset').addEventListener('click', resetToSaved);
+  $('modalCancel').addEventListener('click', closeModal);
+  $('modalOk').addEventListener('click', function () { var cb = modalCb; if (cb && cb() === false) return; closeModal(); });
+  window.addEventListener('beforeunload', function (e) { if (App.dirty) { e.preventDefault(); e.returnValue = ''; } });
+  window.NwcApp = App; // for diagnostics
+  load();
+})();
+</script>

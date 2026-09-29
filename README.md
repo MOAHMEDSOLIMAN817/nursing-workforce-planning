@@ -9,6 +9,11 @@ reports.
 > nursing hours only. It does **not** cover overtime, payroll, salary, attendance,
 > leave, recruitment workflow, or employee names.
 
+> **Google Sheets version:** a Google Apps Script edition of the calculator, backed by Google Sheets,
+> is in [`apps-script/`](apps-script/README.md). It uses the corrected workbook methodology: a shared
+> engine, RN/CNC/PCA separation, transfers, overtime, and costs. See
+> [`apps-script/PROJECT_MEMORY.md`](apps-script/PROJECT_MEMORY.md).
+
 ## Tech Stack
 
 - **React 18 + TypeScript**

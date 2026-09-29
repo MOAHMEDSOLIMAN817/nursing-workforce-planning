@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <title>Nursing Workforce Calculator</title>
+  <?!= include('Styles'); ?>
+</head>
+<body>
+  <header class="topbar">
+    <h1>Nursing Workforce Calculator</h1>
+    <span class="pill" id="monthPill">—</span>
+    <span class="pill" id="savePill">Loading…</span>
+    <span class="spacer"></span>
+    <button id="btnReset" type="button">Reset to Saved</button>
+    <button id="btnSave" type="button" class="primary" disabled>Save</button>
+  </header>
+  <nav class="tabs" id="tabs">
+    <button type="button" data-page="summary" class="active">Summary</button>
+    <button type="button" data-page="inpatient">Inpatient</button>
+    <button type="button" data-page="other">Other &amp; OPD</button>
+    <button type="button" data-page="settings">Settings</button>
+  </nav>
+  <div id="banners"></div>
+  <main>
+    <section class="page active" id="page-summary"><div class="loading">Loading saved data…</div></section>
+    <section class="page" id="page-inpatient"></section>
+    <section class="page" id="page-other"></section>
+    <section class="page" id="page-settings"></section>
+  </main>
+
+  <div class="modal-bg" id="modalBg">
+    <div class="modal" role="dialog" aria-modal="true">
+      <h3 id="modalTitle"></h3>
+      <div id="modalBody"></div>
+      <div class="actions">
+        <button type="button" id="modalCancel">Cancel</button>
+        <button type="button" id="modalOk" class="primary">OK</button>
+      </div>
+    </div>
+  </div>
+  <div class="toast" id="toast"></div>
+
+  <script><?!= engineSource ?></script>
+  <?!= include('Scripts'); ?>
+</body>
+</html>
