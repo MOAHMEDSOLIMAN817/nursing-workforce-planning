@@ -86,8 +86,8 @@ Saved inputs are not overwritten. The `Audit_Log` records what was migrated.
   inputs, staff and hours, and its result, including exactly which data is missing.
 - **Other & OPD:** one table — Unit, **Beds / Clinics**, **Required FTE**, **Nurses now**, Gap and Status. Type the
   required FTE for each unit; beds / clinics is for reference. **OPD – Surgical and OPD – Medical keep their clinic
-  formula** (clinics × active % × RN per clinic × opening hours): change the number of clinics and the required FTE
-  recalculates. No methods, lists or detail panels. Add Unit asks only for a name (optionally beds / clinics and required
+  formula** (clinics × active % × RN per clinic × opening hours): every part of the formula is editable in the row and
+  the required FTE recalculates as you type. No methods, lists or detail panels. Add Unit asks only for a name (optionally beds / clinics and required
   FTE). Calculated methods remain in Full view.
 - **Settings:** 10 basic fields.
 - Everything else is in **Full view** (described below). Both views use the same data and calculations.
@@ -135,7 +135,7 @@ archive and delete actions all ask for confirmation.
 
 ```bash
 npm run test:gas   # 80 engine, server and Apps Script-compatibility tests (node:test); also run by `npm test`
-npm run test:ui    # browser end-to-end test (112 checks; needs Playwright/Chromium)
+npm run test:ui    # browser end-to-end test (118 checks; needs Playwright/Chromium)
 ```
 
 See `PROJECT_MEMORY.md` for calculation definitions and design decisions.

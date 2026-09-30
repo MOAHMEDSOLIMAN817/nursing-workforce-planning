@@ -686,8 +686,13 @@
     units.forEach(function (u) {
       var r = res(u.id) || {}, manual = u.method === 'MANUAL', clinic = u.method === 'CLINIC', cp = C.capacityPath(u);
       var ph = !manual && r.baseRequiredFTE !== null && r.baseRequiredFTE !== undefined ? n2(r.baseRequiredFTE) + ' (calculated)' : 'enter';
+      // Result is a live region; the formula inputs sit outside it so typing never loses focus.
       var reqCell = clinic
-        ? '<td class="calcreq" data-region="clinicreq" data-arg="' + esc(u.id) + '"></td>'
+        ? '<td class="calcreq"><div data-region="clinicreq" data-arg="' + esc(u.id) + '"></div>' +
+          '<div class="formula" title="Required = clinics × active % × RN per clinic × open hours">' +
+          '<span>× ' + uIn(u, 'params.CLINIC.utilisationPct', 'f', ' aria-label="Active clinics % for ' + esc(u.name) + '"') + ' %</span>' +
+          '<span>× ' + uIn(u, 'params.CLINIC.rnPerClinic', 'f', ' aria-label="RN per clinic for ' + esc(u.name) + '"') + ' RN</span>' +
+          '<span>× ' + uIn(u, 'schedule.weekdayHours', 'f', ' aria-label="Open hours per day for ' + esc(u.name) + '"') + ' h</span></div></td>'
         : '<td>' + uIn(u, 'params.MANUAL.requiredFTE', 'req', ' placeholder="' + esc(ph) + '" aria-label="Required FTE for ' + esc(u.name) + '"') +
           '<span class="sub" data-region="mfinal" data-arg="' + esc(u.id) + '"></span></td>';
       h += '<tr class="unit' + (r.isOpen === false ? ' closed' : '') + (r.counted === false ? ' excluded' : '') + '" data-row="' + esc(u.id) + '">' +
@@ -705,8 +710,8 @@
     var u = unit(id), r = res(id); if (!u || !r) return '';
     var p = (u.params || {}).CLINIC || {};
     if (r.requiredFTE === null) return DR + '<span class="sub">' + esc(r.missing.join(', ')) + '</span>';
-    return '<b>' + n2(r.requiredFTE) + '</b><span class="sub">' + esc(p.clinics) + ' × ' + esc(p.utilisationPct) + '% × ' + esc(p.rnPerClinic) + ' RN' +
-      (r.reliefFactorApplied ? ' × ' + r.reliefFactorApplied : '') + '</span>';
+    return '<b>' + n2(r.requiredFTE) + '</b>' + (r.reliefFactorApplied ? '<span class="sub">incl. coverage × ' + r.reliefFactorApplied + '</span>' : '') +
+      (r.minApplied ? '<span class="sub">minimum staffing applies</span>' : '');
   }
   function manualFinalRegion(id) {
     var r = res(id);
@@ -718,7 +723,7 @@
     var sh = known.reduce(function (a, r) { return a + Math.max(0, r.adjustedGap); }, 0);
     return '<tr class="total"><td class="l">TOTAL' + (known.length < rs.length ? '<span class="sub">' + (rs.length - known.length) + ' unit(s) without a required number</span>' : '') + '</td><td></td>' +
       '<td>' + n2(known.reduce(function (a, r) { return a + r.requiredFTE; }, 0)) + '</td><td>' + rs.reduce(function (a, r) { return a + r.currentHC; }, 0) + '</td>' +
-      '<td class="l"><span class="gap short">▲ Shortage ' + n2(sh) + '</span></td><td></td></tr>';
+      '<td class="l">' + (sh > 0.005 ? '<span class="gap short">▲ Shortage ' + n2(sh) + '</span>' : '<span class="gap bal">No shortage</span>') + '</td><td></td></tr>';
   }
 
   function renderUnitsSimple(section) {

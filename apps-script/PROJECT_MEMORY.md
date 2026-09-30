@@ -68,8 +68,9 @@ Simple view shows Other & OPD as one table: Unit | Beds / Clinics | Required FTE
 - **Beds / Clinics** (`capacityPath`): for MANUAL units it is `params.MANUAL.capacity`, a reference size only (it never
   changes the typed Required FTE); for CLINIC units it is the clinic count that drives the formula.
 - **OPD – Surgical / OPD – Medical keep the clinic formula** (schema 4): Required = MAX(clinics × active % × RN per
-  clinic, minimum) × opening hours ÷ hours per FTE (× relief factor if on). Shown read-only with the formula
-  (e.g. 70 × 70% × 0.5 RN); changing the clinics recalculates. Active % and RN per clinic are edited in Full view.
+  clinic, minimum) × opening hours ÷ hours per FTE (× relief factor if on). In Simple view every part of the formula is
+  editable in the row — clinics (Beds / Clinics column) × active % × RN per clinic × open hours per day — and the result
+  recalculates as you type. Friday/holiday hours and the minimum stay in Full view.
 Typing a number on a unit that uses a calculated method switches it to MANUAL; its previous inputs stay in params.
 
 - Inputs are stored per method (`params[METHOD]`). `switchMethod` never
@@ -212,4 +213,4 @@ first `getAppData()` when `schema_version < 2`:
   - `engine.test.cjs` (52, incl. relief-factor, manual, beds / clinics and clinic-formula cases)
   - `server.test.cjs` (16, including save/reload persistence, v1→v4 / v2→v3 / v3→v4 migrations and legacy settings)
   - `gas-compat.test.cjs` (12)
-  - `ui-smoke.cjs` (112 browser checks)
+  - `ui-smoke.cjs` (118 browser checks)
