@@ -308,3 +308,24 @@ test('v4 migration on a v3 sheet: OPD clinic formula restored, beds / clinics fi
   assert.equal(st.units.find(u => u.id === 'U-DR').params.MANUAL.capacity, 5);
   assert.match(c.initializeSystem(), /nothing changed/);
 });
+
+test('permanent delete: only explicitly listed units are removed; linked rows cleaned; audited', () => {
+  const c = createContext();
+  c.initializeSystem();
+  const d = J(c.getAppData());
+  d.state.units = d.state.units.filter(u => u.id !== 'U-CATH' && u.id !== 'U-ENDO');   // ENDO omitted but NOT listed
+  d.state.transfers = [{ id: 'T-1', sourceUnitId: 'U-OPD-MED', destUnitId: 'U-CATH', fte: 1, competencyConfirmed: true, coverageCompatible: true, notes: '' }];
+  d.state.contributions = [{ id: 'A-1', category: 'CNC', staffRef: '', unitId: 'U-CATH', allocatedFTE: 1, contributionPct: 20, approved: true, countedInRNFTE: false, notes: '' }];
+  d.state.units.find(u => u.id === 'U-OR').relation = { type: 'POSSIBLE_DUPLICATE_OF', unitId: 'U-CATH', resolution: 'UNRESOLVED' };
+  const res = c.saveAppData({ state: d.state, revision: d.revision, deletedUnitIds: ['U-CATH', 'U-DOES-NOT-EXIST'] });
+  assert.equal(res.ok, true, JSON.stringify(res.errors));
+  const st = c.getAppData().state;
+  assert.ok(!st.units.some(u => u.id === 'U-CATH'), 'listed unit deleted');
+  assert.ok(st.units.some(u => u.id === 'U-ENDO'), 'omitted but unlisted unit kept');
+  assert.equal(st.units.length, 24);
+  assert.equal(st.transfers.length, 0);
+  assert.equal(st.contributions.length, 0);
+  assert.equal(st.units.find(u => u.id === 'U-OR').relation.type, '', 'relation to the deleted unit cleared');
+  assert.ok(!c.__ss.sheets.Units.data.some(r => r[0] === 'U-CATH'), 'row removed from the sheet');
+  assert.ok(c.__ss.sheets.Audit_Log.data.some(r => /units deleted permanently: Cathlab \(U-CATH\)/.test(r[3])));
+});

@@ -227,9 +227,9 @@ function readTable_(name) {
 /**
  * Rewrites the data rows of a sheet from records keyed by header name.
  * Columns not in the records (e.g. added by users) are preserved per key.
- * keepUnlisted: existing rows whose key is not in records are kept.
+ * keepUnlisted: existing rows whose key is not in records are kept (except keys in dropKeys).
  */
-function writeTable_(name, keyCol, records, keepUnlisted) {
+function writeTable_(name, keyCol, records, keepUnlisted, dropKeys) {
   var sh = getSpreadsheet_().getSheetByName(name);
   ensureHeaders_(sh, APP_CONFIG.COLUMNS[name]);
   var table = readTable_(name);
@@ -247,7 +247,7 @@ function writeTable_(name, keyCol, records, keepUnlisted) {
   });
   if (keepUnlisted) {
     table.rows.forEach(function (r) {
-      if (!listed[String(r[keyCol])]) {
+      if (!listed[String(r[keyCol])] && !(dropKeys && dropKeys[String(r[keyCol])])) {
         var base = r._raw.slice(); while (base.length < headers.length) base.push('');
         grid.push(base.slice(0, headers.length));
       }
@@ -367,7 +367,7 @@ function readUnits_() {
     .sort(function (a, b) { return (Number(a.sortOrder) || 0) - (Number(b.sortOrder) || 0); });
 }
 
-function writeUnits_(units, user, changedIds) {
+function writeUnits_(units, user, changedIds, deleteIds) {
   var now = new Date();
   var prev = {};
   readTable_(APP_CONFIG.SHEETS.UNITS).rows.forEach(function (r) { prev[String(r.unit_id)] = r; });
@@ -376,7 +376,7 @@ function writeUnits_(units, user, changedIds) {
     if (changedIds && !changedIds[u.id] && prev[u.id]) { rec.updated_at = prev[u.id].updated_at; rec.updated_by = prev[u.id].updated_by; }
     return rec;
   });
-  writeTable_(APP_CONFIG.SHEETS.UNITS, 'unit_id', recs, true);
+  writeTable_(APP_CONFIG.SHEETS.UNITS, 'unit_id', recs, true, deleteIds);
 }
 
 function readTransfers_() {

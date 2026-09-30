@@ -211,6 +211,6 @@ first `getAppData()` when `schema_version < 2`:
   new installs run it right after seeding. Old method inputs are kept, so Full view can switch a unit back.
 - Tests:
   - `engine.test.cjs` (52, incl. relief-factor, manual, beds / clinics and clinic-formula cases)
-  - `server.test.cjs` (16, including save/reload persistence, v1→v4 / v2→v3 / v3→v4 migrations and legacy settings)
+  - `server.test.cjs` (17, incl. permanent delete; including save/reload persistence, v1→v4 / v2→v3 / v3→v4 migrations and legacy settings)
   - `gas-compat.test.cjs` (12)
-  - `ui-smoke.cjs` (118 browser checks)
+  - `ui-smoke.cjs` (142 browser checks)

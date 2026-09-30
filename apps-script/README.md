@@ -96,7 +96,11 @@ Saved inputs are not overwritten. The `Audit_Log` records what was migrated.
   formula** (clinics × active % × RN per clinic × opening hours): every part of the formula is editable in the row and
   the required FTE recalculates as you type. No methods, lists or detail panels. Add Unit asks only for a name (optionally beds / clinics and required
   FTE). Calculated methods remain in Full view.
-- **Settings:** 10 basic fields.
+- **Edit / rename / delete a unit:** the **✎** next to a unit name (Inpatient and Other & OPD) opens a small dialog:
+  rename (blank or duplicate names are refused), open/close, or **Delete unit**. A deleted unit leaves all
+  calculations but keeps its data; **Settings → Deleted units** lets you **Restore** it or **Delete permanently**
+  (also removes its CNC/PCA allocations and transfers; applied when you press Save, recorded in `Audit_Log`).
+- **Settings:** 10 basic fields, plus the Deleted units list.
 - Everything else is in **Full view** (described below). Both views use the same data and calculations.
 
 **Full view:**
@@ -141,8 +145,8 @@ archive and delete actions all ask for confirmation.
 ## Tests
 
 ```bash
-npm run test:gas   # 80 engine, server and Apps Script-compatibility tests (node:test); also run by `npm test`
-npm run test:ui    # browser end-to-end test (118 checks; needs Playwright/Chromium)
+npm run test:gas   # 81 engine, server and Apps Script-compatibility tests (node:test); also run by `npm test`
+npm run test:ui    # browser end-to-end test (142 checks; needs Playwright/Chromium)
 ```
 
 See `PROJECT_MEMORY.md` for calculation definitions and design decisions.

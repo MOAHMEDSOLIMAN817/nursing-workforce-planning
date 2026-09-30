@@ -123,6 +123,10 @@
   .chip { border-radius: 999px; padding: 5px 12px; background: var(--warn-bg); border-color: #f0d58a; color: var(--warn); font-weight: 600; font-size: 13px; }
   .chip:hover { background: #ffecb3; }
   .unitlink { font-size: 14px; padding: 0; text-align: left; }
+  td.name .nm { display: flex; align-items: center; gap: 6px; }
+  .editbtn { border: 1px solid transparent; background: transparent; color: var(--teal-600); padding: 1px 6px; border-radius: 6px; font-size: 14px; line-height: 1.2; }
+  .editbtn:hover, .editbtn:focus-visible { border-color: var(--line); background: var(--teal-50); }
+  .modal-danger { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
   body.simple table.grid input.hc { width: 72px; }
   table.grid.manual input.req { width: 120px; min-width: 0; font-weight: 600; }
   table.grid.manual input.hc, table.grid.manual input.cap { width: 72px; min-width: 0; }
@@ -1758,7 +1762,7 @@ document.body.classList.add('simple');
 (function () {
   'use strict';
   var C = NwcCalc, S = C.STATUS;
-  var App = { saved: null, state: null, revision: 0, result: null, page: 'summary', open: {}, view: { INPATIENT: 'staff', OTHER: 'staff' }, dirty: false, saving: false, mode: 'simple' };
+  var App = { saved: null, state: null, revision: 0, result: null, page: 'summary', open: {}, view: { INPATIENT: 'staff', OTHER: 'staff' }, dirty: false, saving: false, mode: 'simple', deleted: [] };
   try { if (window.localStorage && localStorage.getItem('nwcMode') === 'full') App.mode = 'full'; } catch (e) { /* storage unavailable: keep default */ }
   function simple() { return App.mode === 'simple'; }
   var $ = function (id) { return document.getElementById(id); };
@@ -2334,9 +2338,7 @@ document.body.classList.add('simple');
     h += '<h2>CNC &amp; PCA/PCT unit allocations <span class="hint">only allocated, qualified/approved FTE not already in RN FTE is credited</span></h2>' + allocationTable(null) +
       '<div class="toolbar"><button type="button" class="small" data-act="add-ct" data-cat="CNC">+ CNC allocation</button><button type="button" class="small" data-act="add-ct" data-cat="PCA">+ PCA/PCT allocation</button></div>';
     var arch = App.state.units.filter(function (u) { return C.bool(u.archived); });
-    h += '<h2>Archived units</h2>' + (arch.length ? '<div class="tablewrap"><table class="grid compact"><tbody>' + arch.map(function (u) {
-      return '<tr><td class="l">' + esc(u.name) + ' <span class="note">' + esc(u.id) + '</span></td><td><button type="button" class="small" data-act="restore" data-id="' + esc(u.id) + '">Restore</button></td></tr>';
-    }).join('') + '</tbody></table></div>' : '<p class="note">None. Archived units keep their saved data and are excluded from calculations.</p>');
+    h += '<h2>Archived (deleted) units</h2>' + deletedUnitsTable('None. Archived units keep their saved data and are excluded from calculations.');
     h += '<h2>Data quality</h2><div class="card" data-region="issues"></div>';
     return h;
   }
@@ -2449,7 +2451,7 @@ document.body.classList.add('simple');
         : '<td>' + uIn(u, 'params.MANUAL.requiredFTE', 'req', ' placeholder="' + esc(ph) + '" aria-label="Required FTE for ' + esc(u.name) + '"') +
           '<span class="sub" data-region="mfinal" data-arg="' + esc(u.id) + '"></span></td>';
       h += '<tr class="unit' + (r.isOpen === false ? ' closed' : '') + (r.counted === false ? ' excluded' : '') + '" data-row="' + esc(u.id) + '">' +
-        '<td class="l name"><b>' + esc(u.name) + '</b>' + (r.isOpen === false ? '<span class="sub">closed</span>' : clinic ? '<span class="sub">clinic formula</span>' : '') + '</td>' +
+        '<td class="l name"><div class="nm"><b>' + esc(u.name) + '</b>' + '<button type="button" class="editbtn" data-act="edit" data-id="' + esc(u.id) + '" title="Rename, open/close or delete" aria-label="Edit ' + esc(u.name) + '">✎</button>' + '</div>' + (r.isOpen === false ? '<span class="sub">closed</span>' : clinic ? '<span class="sub">clinic formula</span>' : '') + '</td>' +
         '<td>' + (cp ? uIn(u, cp, 'cap', ' aria-label="' + (clinic ? 'Clinics' : 'Beds / clinics') + ' for ' + esc(u.name) + '"' + (clinic ? '' : ' placeholder="—"')) : '<span class="note">—</span>') + '</td>' +
         reqCell +
         '<td>' + uIn(u, 'currentRNHeadcount', 'hc', ' aria-label="Nurses now in ' + esc(u.name) + '"') + '</td>' +
@@ -2488,7 +2490,7 @@ document.body.classList.add('simple');
     units.forEach(function (u) {
       var r = res(u.id) || {}, open = !!App.open[u.id];
       h += '<tr class="unit' + (open ? ' open' : '') + (r.isOpen === false ? ' closed' : '') + (r.counted === false ? ' excluded' : '') + '" data-row="' + esc(u.id) + '">' +
-        '<td class="l name"><b>' + esc(u.name) + '</b>' + (r.isOpen === false ? '<span class="sub">closed</span>' : '') + '</td>' +
+        '<td class="l name"><div class="nm"><b>' + esc(u.name) + '</b>' + '<button type="button" class="editbtn" data-act="edit" data-id="' + esc(u.id) + '" title="Rename, open/close or delete" aria-label="Edit ' + esc(u.name) + '">✎</button>' + '</div>' + (r.isOpen === false ? '<span class="sub">closed</span>' : '') + '</td>' +
         '<td class="l">' + keyInputs(u) + '</td>' +
         '<td>' + uIn(u, 'currentRNHeadcount', 'hc', ' title="Current RN headcount"') + '</td>' +
         '<td data-region="req" data-arg="' + esc(u.id) + '"></td>' + out(u.id, 'adjustedGap', 'gap') + out(u.id, 'status', 'status', 'c') +
@@ -2564,8 +2566,59 @@ document.body.classList.add('simple');
         ' data-s="' + k + '" value="' + esc(v) + '"' + (f.type === 'month' ? ' data-rr="1"' : '') + '></label>';
     });
     h += '</div><div data-region="hours" style="margin-top:12px"></div>' +
+      '</div><div class="card" style="max-width:860px;margin-top:16px"><h3>Deleted units <span class="hint">removed from all calculations; restore or delete permanently</span></h3>' +
+      deletedUnitsTable('No deleted units.') +
       '<p class="note">More settings (requirement basis, reference leave hours, CNC/PCA contribution %, allocations, costs, archived units) are in <button type="button" class="link" data-act="mode" data-v="full">Full view</button>.</p></div>';
     return h;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Edit, delete (archive) and permanent delete
+  // ---------------------------------------------------------------------------
+  function deletedUnitsTable(emptyText) {
+    var arch = App.state.units.filter(function (u) { return C.bool(u.archived); });
+    if (!arch.length) return '<p class="note">' + esc(emptyText) + '</p>';
+    return '<div class="tablewrap"><table class="grid compact"><tbody>' + arch.map(function (u) {
+      return '<tr><td class="l"><b>' + esc(u.name) + '</b> <span class="note">' + (u.section === 'INPATIENT' ? 'Inpatient' : 'Other &amp; OPD') + '</span></td>' +
+        '<td><button type="button" class="small" data-act="restore" data-id="' + esc(u.id) + '">Restore</button> ' +
+        '<button type="button" class="small danger" data-act="purge" data-id="' + esc(u.id) + '">Delete permanently</button></td></tr>';
+    }).join('') + '</tbody></table></div>';
+  }
+
+  function editUnit(id) {
+    var u = unit(id); if (!u) return;
+    confirmBox('Edit unit',
+      '<div class="form" style="grid-template-columns:1fr"><label>Unit name<input type="text" id="editName" maxlength="120" value="' + esc(u.name) + '"></label>' +
+      '<label class="chk"><input type="checkbox" id="editOpen"' + (u.isOpen !== false ? ' checked' : '') + '> Unit is open (closed units need no nurses)</label></div>' +
+      '<div class="modal-danger"><button type="button" class="danger small" id="editDelete">Delete unit…</button>' +
+      '<span class="note">Removes it from all calculations. You can restore it from Settings.</span></div>',
+      function () {
+        var name = ($('editName').value || '').trim();
+        if (!name) { toast('Enter a unit name.'); return false; }
+        if (App.state.units.some(function (x) { return x.id !== id && !C.bool(x.archived) && C.normName(x.name) === C.normName(name); })) { toast('Another unit already has that name.'); return false; }
+        var changed = name !== u.name || (u.isOpen !== false) !== $('editOpen').checked;
+        u.name = name; u.isOpen = $('editOpen').checked;
+        recompute(); renderAll();
+        if (changed) toast('Changes applied — remember to Save.');
+      }, 'Apply');
+    $('editDelete').addEventListener('click', function () { closeModal(); archiveUnit(id, true); });
+  }
+
+  function purgeUnit(id) {
+    var u = unit(id); if (!u) return;
+    var allocs = App.state.contributions.filter(function (c) { return c.unitId === id; }).length;
+    var trs = App.state.transfers.filter(function (t) { return t.sourceUnitId === id || t.destUnitId === id; }).length;
+    confirmBox('Delete permanently', 'Permanently delete <b>' + esc(u.name) + '</b> and all its data? This cannot be undone after you Save.' +
+      (allocs || trs ? '<br><br>Also removed: ' + [allocs ? allocs + ' CNC/PCA allocation(s)' : '', trs ? trs + ' transfer(s)' : ''].filter(Boolean).join(' and ') + '.' : ''),
+      function () {
+        App.state.units = App.state.units.filter(function (x) { return x.id !== id; });
+        App.state.contributions = App.state.contributions.filter(function (c) { return c.unitId !== id; });
+        App.state.transfers = App.state.transfers.filter(function (t) { return t.sourceUnitId !== id && t.destUnitId !== id; });
+        App.state.units.forEach(function (x) { if (x.relation && x.relation.unitId === id) x.relation = { type: '', unitId: '', resolution: 'UNRESOLVED' }; });
+        App.deleted.push(id); delete App.open[id];
+        recompute(); renderAll();
+        toast('Deleted — press Save to make it permanent.');
+      }, 'Delete permanently');
   }
 
   var REGIONS = {
@@ -2627,7 +2680,13 @@ document.body.classList.add('simple');
     else if (act === 'view') { App.view[b.getAttribute('data-sec')] = b.getAttribute('data-v'); renderAll(); }
     else if (act === 'add-unit') addUnit(b.getAttribute('data-sec'));
     else if (act === 'archive') archiveUnit(id);
-    else if (act === 'restore') { unit(id).archived = false; recompute(); renderAll(); toast('Restored — remember to Save.'); }
+    else if (act === 'restore') {
+      var ru = unit(id);
+      if (App.state.units.some(function (x) { return x.id !== id && !C.bool(x.archived) && C.normName(x.name) === C.normName(ru.name); })) { toast('Another active unit has the same name — rename it first.'); return; }
+      ru.archived = false; recompute(); renderAll(); toast('Restored — remember to Save.');
+    }
+    else if (act === 'edit') editUnit(id);
+    else if (act === 'purge') purgeUnit(id);
     else if (act === 'add-row') { var uu = unit(id), p = ensureParams(uu), tk = b.getAttribute('data-tk'); p[tk] = p[tk] || []; p[tk].push({}); recompute(); renderAll(); }
     else if (act === 'del-row') confirmBox('Remove row', 'Remove this row from ' + esc(unit(id).name) + '?', function () { ensureParams(unit(id))[b.getAttribute('data-tk')].splice(i, 1); recompute(); renderAll(); });
     else if (act === 'add-transfer') { App.state.transfers.push({ id: newId('T-'), sourceUnitId: '', destUnitId: '', fte: '', competencyConfirmed: false, coverageCompatible: false, notes: '' }); recompute(); renderAll(); }
@@ -2682,15 +2741,16 @@ document.body.classList.add('simple');
     $('newUnitType').addEventListener('change', function () { $('newUnitMethod').innerHTML = methodsFor(this.value); });
   }
 
-  function archiveUnit(id) {
+  function archiveUnit(id, asDelete) {
     var u = unit(id);
     var refs = App.state.transfers.filter(function (t) { return t.sourceUnitId === id || t.destUnitId === id; }).length;
     var allocs = App.state.contributions.filter(function (c) { return c.unitId === id; }).length;
-    confirmBox('Archive unit', 'Archive <b>' + esc(u.name) + '</b>? It will be excluded from all calculations and totals. Its saved data is kept and it can be restored from Settings.' +
+    confirmBox(asDelete ? 'Delete unit' : 'Archive unit', (asDelete ? 'Delete <b>' + esc(u.name) + '</b>? ' : 'Archive <b>' + esc(u.name) + '</b>? ') +
+      'It will be removed from all calculations and totals. Its data is kept and it can be restored from Settings.' +
       (refs ? '<br><br>' + refs + ' transfer(s) reference this unit and will no longer be counted.' : '') +
       (allocs ? '<br>' + allocs + ' CNC/PCA allocation(s) will no longer be credited.' : ''), function () {
-      u.archived = true; delete App.open[id]; recompute(); renderAll(); toast('Archived — remember to Save.');
-    }, 'Archive');
+      u.archived = true; delete App.open[id]; recompute(); renderAll(); toast((asDelete ? 'Deleted' : 'Archived') + ' — remember to Save.');
+    }, asDelete ? 'Delete' : 'Archive');
   }
 
   // ---------------------------------------------------------------------------
@@ -2727,7 +2787,7 @@ document.body.classList.add('simple');
   }
   function onLoaded(data) {
     data.state.contributions = data.state.contributions || [];
-    App.saved = C.clone(data.state); App.state = C.clone(data.state); App.revision = data.revision;
+    App.saved = C.clone(data.state); App.state = C.clone(data.state); App.revision = data.revision; App.deleted = [];
     recompute(); renderAll();
   }
   function save() {
@@ -2748,7 +2808,7 @@ document.body.classList.add('simple');
     }).withFailureHandler(function (err) {
       App.saving = false; refreshChrome();
       toast('Save failed: ' + (err && err.message || err), 8000);
-    }).saveAppData({ state: App.state, revision: App.revision });
+    }).saveAppData({ state: App.state, revision: App.revision, deletedUnitIds: App.deleted });
   }
   function resetToSaved() {
     var go = function () { $('savePill').textContent = 'Reloading…'; load(); toast('Reloaded the saved data.'); };

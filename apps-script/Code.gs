@@ -82,7 +82,12 @@ function saveAppData(payload) {
       return { ok: false, conflict: true, errors: ['The data was saved by someone else since you loaded it (revision ' + current + '). Use "Reset to Saved" to reload, then re-apply your changes.'] };
     }
     var existingUnits = readUnits_();
-    var clean = sanitizeState_(payload.state || {}, existingUnits);
+    // Units are only removed from the sheet when listed explicitly (permanent delete from the UI).
+    var deleteIds = {};
+    (Array.isArray(payload.deletedUnitIds) ? payload.deletedUnitIds : []).forEach(function (id) {
+      if (existingUnits.some(function (u) { return u.id === id; })) deleteIds[String(id)] = true;
+    });
+    var clean = sanitizeState_(payload.state || {}, existingUnits, deleteIds);
     if (clean.errors.length) return { ok: false, errors: clean.errors };
     var state = clean.state;
 
@@ -102,7 +107,7 @@ function saveAppData(payload) {
     });
 
     writeSettings_(state.settings);
-    writeUnits_(state.units, user, changed);
+    writeUnits_(state.units, user, changed, deleteIds);
     writeTransfers_(state.transfers);
     writeContributions_(state.contributions);
     writeResultsSheet_(result);
@@ -111,7 +116,9 @@ function saveAppData(payload) {
     setMeta_('revision', String(rev));
     setMeta_('saved_at', new Date().toISOString());
     setMeta_('saved_by', user);
+    var deletedNames = existingUnits.filter(function (u) { return deleteIds[u.id]; }).map(function (u) { return u.name + ' (' + u.id + ')'; });
     appendAudit_('save', 'rev ' + rev + '; units changed: ' + (changedNames.join(', ') || 'none') +
+      (deletedNames.length ? '; units deleted permanently: ' + deletedNames.join(', ') : '') +
       '; transfers: ' + state.transfers.length + '; allocations: ' + state.contributions.length +
       '; required FTE ' + result.summary.requiredFTE.toFixed(2) + '; final planning shortage ' + result.summary.finalShortageFTE.toFixed(2) +
       (result.summary.provisional ? ' (completed units only — provisional)' : ''));
@@ -166,7 +173,8 @@ function sanitizeParams_(params) {
   return out;
 }
 
-function sanitizeState_(input, existingUnits) {
+function sanitizeState_(input, existingUnits, deleteIds) {
+  deleteIds = deleteIds || {};
   var errors = [];
   var settings = {};
   NwcCalc.SETTINGS_FIELDS.forEach(function (f) {
@@ -196,10 +204,12 @@ function sanitizeState_(input, existingUnits) {
     };
   });
   units.forEach(function (u) { if (!u.unitType) u.unitType = NwcCalc.unitTypeOf(u); });
-  // A saved unit can be archived but never silently deleted.
+  // A saved unit is never silently deleted: only ids the user explicitly deleted permanently are dropped.
+  units = units.filter(function (u) { return !deleteIds[u.id]; });
   existingUnits.forEach(function (u) {
-    if (!seen[u.id]) { units.push(u); seen[u.id] = true; }
+    if (!seen[u.id] && !deleteIds[u.id]) { units.push(u); seen[u.id] = true; }
   });
+  units.forEach(function (u) { if (u.relation && deleteIds[u.relation.unitId]) u.relation = { type: '', unitId: '', resolution: 'UNRESOLVED' }; });
 
   function rowId(prefix, v) { var id = sStr_(v, 64); return ID_RE_.test(id) ? id : prefix + Utilities.getUuid().slice(0, 8); }
   var transfers = (Array.isArray(input.transfers) ? input.transfers : []).slice(0, 500).map(function (t) {
@@ -211,6 +221,9 @@ function sanitizeState_(input, existingUnits) {
       unitId: sStr_(c.unitId, 64), allocatedFTE: sNum_(c.allocatedFTE), contributionPct: sNum_(c.contributionPct),
       approved: sBool_(c.approved), countedInRNFTE: sBool_(c.countedInRNFTE), notes: sStr_(c.notes, 500) };
   });
+  // Rows that point at a permanently deleted unit go with it.
+  transfers = transfers.filter(function (t) { return !deleteIds[t.sourceUnitId] && !deleteIds[t.destUnitId]; });
+  contributions = contributions.filter(function (c) { return !deleteIds[c.unitId]; });
   return { errors: errors, state: { settings: settings, units: units, transfers: transfers, contributions: contributions } };
 }
 
