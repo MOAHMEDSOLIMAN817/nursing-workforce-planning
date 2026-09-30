@@ -21,6 +21,13 @@ Excel-like tables. Numbers update as you type, and Save writes them to the sheet
 | `appsscript.json` | Manifest (V8, scopes, web-app settings). |
 | `tests/` | Node tests with an in-memory Apps Script mock, plus a Playwright UI smoke test. Excluded from `clasp push`. |
 
+## Offline version (single HTML file)
+
+`standalone/nursing-workforce-calculator.html` is the same app in one file: open it in any browser, no Google account
+or internet needed. Data is saved in that browser; use **Export data** / **Import data** for backups or to move to another
+computer, and **Start over** to restore the workbook example. Rebuild it after changing `apps-script/` with
+`npm run build:standalone`.
+
 ## Deploy (step by step)
 
 **A. Create the Sheet and the script project**

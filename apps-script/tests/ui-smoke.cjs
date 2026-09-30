@@ -331,6 +331,14 @@ function check(cond, msg) { if (!cond) throw new Error('FAIL: ' + msg); count++;
     const cardsFit = await page.evaluate(() => Array.from(document.querySelectorAll('.kpi')).every(c => c.getBoundingClientRect().right <= window.innerWidth + 1));
     check(cardsFit, `KPI cards wrap inside the viewport at ${w}px`);
   }
+  for (const mode of ['simple', 'full']) {
+    await page.click(`[data-act="mode"][data-v="${mode}"]`);
+    for (const pg of ['summary', 'inpatient', 'other', 'settings']) {
+      await page.click(`#tabs button[data-page="${pg}"]`);
+      check(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth) <= 1, `${mode} ${pg}: no horizontal page scroll at 390px`);
+    }
+  }
+  await page.click('#tabs button[data-page="summary"]');
   await shot('7-summary-mobile');
 
   check(pageErrors.length === 0, 'no browser console errors' + (pageErrors.length ? ': ' + pageErrors.join(' | ') : ''));

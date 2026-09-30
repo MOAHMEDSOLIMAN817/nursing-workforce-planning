@@ -604,8 +604,8 @@
     var row = function (lbl, hc, avail, alloc, cred) {
       return '<tr><td class="l">' + lbl + '</td><td>' + hc + '</td><td>' + n2(avail) + '</td><td>' + n2(alloc) + '</td><td>' + n2(Math.max(0, avail - alloc)) + '</td><td>' + n2(cred) + '</td></tr>';
     };
-    return '<table class="grid compact"><thead><tr><th class="l">Pool</th><th>Headcount</th><th>FTE available</th><th>Allocated</th><th>Unallocated</th><th>Credited</th></tr></thead><tbody>' +
-      row('CNC', sm.cncHC, sm.cncAvailableFTE, sm.cncAllocatedFTE, sm.cncCreditedFTEAllUnits) + row('PCA/PCT', sm.pcaHC, sm.pcaAvailableFTE, sm.pcaAllocatedFTE, sm.pcaCreditedFTEAllUnits) + '</tbody></table>';
+    return '<div class="tablewrap"><table class="grid compact"><thead><tr><th class="l">Pool</th><th>Headcount</th><th>FTE available</th><th>Allocated</th><th>Unallocated</th><th>Credited</th></tr></thead><tbody>' +
+      row('CNC', sm.cncHC, sm.cncAvailableFTE, sm.cncAllocatedFTE, sm.cncCreditedFTEAllUnits) + row('PCA/PCT', sm.pcaHC, sm.pcaAvailableFTE, sm.pcaAllocatedFTE, sm.pcaCreditedFTEAllUnits) + '</tbody></table></div>';
   }
 
   function issuesRegion() {
