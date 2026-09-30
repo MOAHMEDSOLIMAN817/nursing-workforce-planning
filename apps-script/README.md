@@ -66,6 +66,9 @@ Excel-like tables. Numbers update as you type, and Save writes them to the sheet
 14. Run **Nursing Workforce → Initialise / repair sheets** and confirm it reports *nothing changed*.
 15. On the **Settings** sheet tab, check that `reportingMonth` still shows `YYYY-MM` text and has not been converted to a date.
 
+**Updating an existing install:** replacing the files and reopening runs any pending migration once (v3 switches
+Other & OPD units to manual Required FTE, prefilled with their current values).
+
 **Updating an existing v1 install:** replace all 8 files, then reload the Sheet and open the calculator (or run
 `initializeSystem`). This runs the one-time v2 migration:
 - adds a `unit_type` column and a `Contributions` sheet
@@ -78,8 +81,11 @@ Saved inputs are not overwritten. The `Audit_Log` records what was migrated.
 **Simple view (default).** The app opens in a simplified view. The **Simple / Full** switch at the top changes it, and the browser remembers your choice.
 - **Summary:** one headline answer (nurses needed), 4 cards (Required, Available, Shortage, Staff headcount) and a
   "Needs data" list. Click a unit in the list to jump straight to it. The unit table is sorted by largest shortage.
-- **Inpatient / Other & OPD:** main inputs, nurses now, required FTE, gap and status. **▸** opens a short panel with
-  the unit's inputs, staff and hours, and its result, including exactly which data is missing.
+- **Inpatient:** main inputs, nurses now, required FTE, gap and status. **▸** opens a short panel with the unit's
+  inputs, staff and hours, and its result, including exactly which data is missing.
+- **Other & OPD:** one table — type **Required FTE** and **Nurses now**; the gap and status update instantly. No methods,
+  lists or detail panels. Add Unit asks only for a name (and optionally the required FTE). Calculated methods remain in
+  Full view.
 - **Settings:** 10 basic fields.
 - Everything else is in **Full view** (described below). Both views use the same data and calculations.
 
@@ -125,8 +131,8 @@ archive and delete actions all ask for confirmation.
 ## Tests
 
 ```bash
-npm run test:gas   # 72 engine, server and Apps Script-compatibility tests (node:test); also run by `npm test`
-npm run test:ui    # browser end-to-end test (96 checks; needs Playwright/Chromium)
+npm run test:gas   # 77 engine, server and Apps Script-compatibility tests (node:test); also run by `npm test`
+npm run test:ui    # browser end-to-end test (106 checks; needs Playwright/Chromium)
 ```
 
 See `PROJECT_MEMORY.md` for calculation definitions and design decisions.

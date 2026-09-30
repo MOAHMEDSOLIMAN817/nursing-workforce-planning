@@ -2,7 +2,7 @@
 
 This file records calculation definitions, assumptions, structure and
 decisions. Update it whenever the engine changes. The engine version is
-**3.0.0** and the data schema version is **2** (v3 added two settings keys only).
+**3.0.0** and the data schema version is **3** (Other & OPD units default to manual Required FTE).
 
 ## 1. Origin and workbook corrections
 
@@ -56,9 +56,16 @@ colour: "▲ Shortage x" (red) or "▼ Surplus x" (green).
 | Unit type | Allowed methods |
 | --- | --- |
 | INPATIENT | RATIO, ACUITY |
-| OPD | CLINIC (clinic-based), ACTIVITY (patient-volume-based) |
-| OR / ER / DELIVERY / PROCEDURE / CSSD | OR / ER / DELIVERY / PROCEDURE / CSSD |
-| OTHER | POSTS, ACTIVITY |
+| OPD | MANUAL, CLINIC (clinic-based), ACTIVITY (patient-volume-based) |
+| OR / ER / DELIVERY / PROCEDURE / CSSD | MANUAL, or OR / ER / DELIVERY / PROCEDURE / CSSD |
+| OTHER | MANUAL, POSTS, ACTIVITY |
+
+**MANUAL (default for Other & OPD since schema 3):** the user types Required FTE directly. It is treated as the Base
+Required FTE (Final = typed × relief factor only when Leave & Absence Coverage is on). It needs no minimum, schedule or
+method inputs; blank = Data Required (never 0); no reason is required (unlike a manual override). Internally it is
+expressed as hours (FTE × available hours per FTE) so gap, overtime and totals use the same chain as every method.
+Simple view shows Other & OPD as one table: Unit | Required FTE | Nurses now | Gap | Status (no panels or lists).
+Typing a number on a unit that uses a calculated method switches it to MANUAL; its previous inputs stay in params.
 
 - Inputs are stored per method (`params[METHOD]`). `switchMethod` never
   copies or reinterprets another method's inputs; switching back restores them.
@@ -190,8 +197,11 @@ first `getAppData()` when `schema_version < 2`:
   which is serialised into the page.
 - Functions called from menus or `google.script.run` must not end in `_`.
 - Web-app access defaults to `MYSELF`.
+- **Migration v2 → v3** (`migrateToV3_` → `NwcCalc.convertOtherToManual`): each non-inpatient unit switches to MANUAL,
+  prefilled with its current Base Required FTE rounded to 2 dp (blank if Data Required, closed or overridden). Runs once;
+  new installs run it right after seeding. Old method inputs are kept, so Full view can switch a unit back.
 - Tests:
-  - `engine.test.cjs` (46, incl. the relief-factor Delivery Room cases)
-  - `server.test.cjs` (14, including save/reload persistence, v1→v2 migration and legacy settings)
+  - `engine.test.cjs` (50, incl. relief-factor and manual cases)
+  - `server.test.cjs` (15, including save/reload persistence, v1→v3 / v2→v3 migrations and legacy settings)
   - `gas-compat.test.cjs` (12)
-  - `ui-smoke.cjs` (96 browser checks)
+  - `ui-smoke.cjs` (106 browser checks)

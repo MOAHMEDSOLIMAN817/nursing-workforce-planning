@@ -10,7 +10,7 @@
  */
 var APP_CONFIG = {
   APP_TITLE: 'Nursing Workforce Calculator',
-  SCHEMA_VERSION: 2,
+  SCHEMA_VERSION: 3,
   SHEETS: {
     SETTINGS: 'Settings',
     UNITS: 'Units',

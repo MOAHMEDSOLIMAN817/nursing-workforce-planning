@@ -48,8 +48,10 @@ function initializeSystem() {
     setMeta_('seeded_at', new Date().toISOString());
   }
   if (!meta.revision) setMeta_('revision', '1');
-  if (Number(meta.schema_version || 0) < APP_CONFIG.SCHEMA_VERSION) {
-    migrateToV2_().forEach(function (m) { report.push(m); });
+  var ver = Number(meta.schema_version || 0);
+  if (ver < APP_CONFIG.SCHEMA_VERSION) {
+    if (ver < 2) migrateToV2_().forEach(function (m) { report.push(m); });
+    if (ver < 3) migrateToV3_().forEach(function (m) { report.push(m); });
     setMeta_('schema_version', String(APP_CONFIG.SCHEMA_VERSION));
   }
 
@@ -72,6 +74,21 @@ function ensureInitialized_() {
  * FTE allocations. Saved inputs are never overwritten; the v1 sheet is left
  * in place (read-only) for audit.
  */
+/**
+ * Version 2 → 3. Other & OPD units switch to "Required FTE entered manually",
+ * prefilled with their current base required FTE. Previous method inputs stay
+ * in params_json, so a unit can be switched back in Full view.
+ */
+function migrateToV3_() {
+  var state = { settings: readSettings_(), units: readUnits_(), transfers: readTransfers_(), contributions: readContributions_() };
+  var ids = NwcCalc.convertOtherToManual(state);
+  if (!ids.length) return [];
+  var changed = {};
+  ids.forEach(function (id) { changed[id] = true; });
+  writeUnits_(state.units, 'migration', changed);
+  return ['Switched ' + ids.length + ' Other & OPD unit(s) to manual Required FTE (previous inputs kept)'];
+}
+
 function migrateToV2_() {
   var out = [];
   var units = readUnits_();

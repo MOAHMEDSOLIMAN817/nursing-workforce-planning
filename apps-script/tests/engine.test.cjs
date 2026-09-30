@@ -358,9 +358,9 @@ test('overtime summary: missing eligibility on a short unit → totals Data Requ
 // -----------------------------------------------------------------------------
 // Methods, unit types, validation
 // -----------------------------------------------------------------------------
-test('OPD units are restricted to clinic-based or patient-volume-based methods', () => {
+test('OPD units are restricted to manual, clinic-based or patient-volume-based methods', () => {
   const u = C.newUnit('O', 'OPD', 'OTHER', 'CLINIC', 'OPD');
-  assert.deepEqual(C.allowedMethods(u).join(), 'CLINIC,ACTIVITY');
+  assert.deepEqual(C.allowedMethods(u).join(), 'MANUAL,CLINIC,ACTIVITY');
   u.method = 'POSTS'; u.params.POSTS = { rnPosts: 3 };
   assert.match(errText(C.calculate(state([u]))), /Outpatient \(OPD\) units may only use/);
 });
@@ -565,4 +565,59 @@ test('relief: factor limits 1.00–1.50 validated', () => {
   assert.match(bad.issues.filter(i => i.level === 'error').map(i => i.message).join(), /Relief Factor must not exceed 1.5/);
   const low = C.calculate(state([ward('W')], { settings: baseSettings({ reliefFactor: 0.9 }) }));
   assert.match(low.issues.filter(i => i.level === 'error').map(i => i.message).join(), /Relief Factor must be at least 1/);
+});
+
+// -----------------------------------------------------------------------------
+// Manual Required FTE (Other & OPD)
+// -----------------------------------------------------------------------------
+function manualUnit(id, req, current) {
+  const u = C.newUnit(id, id, 'OTHER', 'MANUAL', 'OTHER');
+  u.params.MANUAL.requiredFTE = req; u.currentRNHeadcount = current;
+  return u;
+}
+
+test('manual: required FTE is exactly the typed number; gap = required − available', () => {
+  const r = C.calculate(state([manualUnit('M', 10.5, 12), manualUnit('S', 8, 5)]));
+  const m = unitRes(r, 'M'), sh = unitRes(r, 'S');
+  assert.equal(m.requiredFTE, 10.5);
+  assert.equal(m.baseRequiredFTE, 10.5);
+  close(m.adjustedGap, -1.5);
+  assert.equal(m.status, C.STATUS.MET);
+  close(sh.adjustedGap, 3);
+  assert.equal(sh.status, C.STATUS.GAP);
+  close(sh.uncoveredHours, 3 * HPF, 1e-6);
+  assert.equal(r.issues.filter(i => i.level === 'error').length, 0, 'no minimum/schedule/method inputs needed');
+});
+
+test('manual: blank → Data Required (never zero); closed → 0', () => {
+  const blank = unitRes(C.calculate(state([manualUnit('B', '', 4)])), 'B');
+  assert.equal(blank.status, C.STATUS.DATA);
+  assert.equal(blank.requiredFTE, null);
+  const shut = manualUnit('X', '', 4); shut.isOpen = false;
+  assert.equal(unitRes(C.calculate(state([shut])), 'X').requiredFTE, 0);
+  assert.match(C.calculate(state([manualUnit('N', -2, 1)])).issues.map(i => i.message).join(), /cannot be negative/);
+});
+
+test('manual: leave & absence coverage multiplies the typed number only when switched on', () => {
+  const on = unitRes(C.calculate(state([manualUnit('M', 10, 0)], { settings: baseSettings({ applyReliefFactor: true, reliefFactor: 1.17 }) })), 'M');
+  assert.equal(on.baseRequiredFTE, 10);
+  close(on.requiredFTE, 11.7);
+  close(on.uncoveredHours, 11.7 * HPF / 1.17, 1e-6);   // = 10 FTE of actual care hours
+});
+
+test('convertOtherToManual: keeps current results, keeps old inputs, blanks unknowns, skips inpatient', () => {
+  const st = state(E.getSeedUnits_(), { settings: baseSettings({ reportingMonth: '2026-09' }) });
+  const before = C.calculate(st);
+  const ids = C.convertOtherToManual(st);
+  assert.equal(ids.length, 10);
+  const after = C.calculate(st);
+  const opd = st.units.find(u => u.id === 'U-OPD-SURG');
+  assert.equal(opd.method, 'MANUAL');
+  assert.equal(opd.params.CLINIC.clinics, 70, 'previous inputs kept');
+  assert.equal(opd.params.MANUAL.requiredFTE, Math.round(before.units.find(u => u.id === 'U-OPD-SURG').baseRequiredFTE * 100) / 100);
+  assert.equal(st.units.find(u => u.id === 'U-OR').params.MANUAL.requiredFTE, '', 'Data Required stays Data Required');
+  assert.equal(after.summary.unitsDataRequired, before.summary.unitsDataRequired);
+  assert.ok(st.units.filter(u => u.section === 'INPATIENT').every(u => u.method === 'RATIO'));
+  assert.ok(Math.abs(after.summary.requiredFTE - before.summary.requiredFTE) < 0.02, 'totals unchanged apart from 2-dp rounding');
+  assert.equal(C.convertOtherToManual(st).length, 0, 'idempotent');
 });

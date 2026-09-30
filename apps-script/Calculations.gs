@@ -99,6 +99,13 @@ function NWC_ENGINE_FACTORY_() {
   // Switching method never reinterprets another method's parameters.
   // ---------------------------------------------------------------------------
   var METHODS = {
+    MANUAL: {
+      label: 'Required FTE entered manually', section: 'OTHER', key: ['requiredFTE'],
+      fields: [
+        { key: 'requiredFTE', label: 'Required FTE (entered manually)', short: 'Required FTE', type: 'number', min: 0,
+          help: 'Your own figure. Leave & absence coverage is applied on top only when it is switched on.' }
+      ]
+    },
     RATIO: {
       label: 'Patient-to-RN ratio', section: 'INPATIENT', key: ['beds', 'occupancyPct', 'patientsPerRN'],
       fields: [
@@ -211,15 +218,15 @@ function NWC_ENGINE_FACTORY_() {
   /** Unit types restrict which methods a unit may use (e.g. OPD: clinic or patient volume only). */
   var UNIT_TYPES = {
     INPATIENT: { label: 'Inpatient ward / critical care', section: 'INPATIENT', methods: ['RATIO', 'ACUITY'] },
-    OPD: { label: 'Outpatient (OPD)', section: 'OTHER', methods: ['CLINIC', 'ACTIVITY'] },
-    OR: { label: 'Operating rooms', section: 'OTHER', methods: ['OR'] },
-    ER: { label: 'Emergency', section: 'OTHER', methods: ['ER'] },
-    DELIVERY: { label: 'Delivery / labour', section: 'OTHER', methods: ['DELIVERY'] },
-    PROCEDURE: { label: 'Procedure unit', section: 'OTHER', methods: ['PROCEDURE'] },
-    CSSD: { label: 'CSSD', section: 'OTHER', methods: ['CSSD'] },
-    OTHER: { label: 'Other service', section: 'OTHER', methods: ['POSTS', 'ACTIVITY'] }
+    OPD: { label: 'Outpatient (OPD)', section: 'OTHER', methods: ['MANUAL', 'CLINIC', 'ACTIVITY'] },
+    OR: { label: 'Operating rooms', section: 'OTHER', methods: ['MANUAL', 'OR'] },
+    ER: { label: 'Emergency', section: 'OTHER', methods: ['MANUAL', 'ER'] },
+    DELIVERY: { label: 'Delivery / labour', section: 'OTHER', methods: ['MANUAL', 'DELIVERY'] },
+    PROCEDURE: { label: 'Procedure unit', section: 'OTHER', methods: ['MANUAL', 'PROCEDURE'] },
+    CSSD: { label: 'CSSD', section: 'OTHER', methods: ['MANUAL', 'CSSD'] },
+    OTHER: { label: 'Other service', section: 'OTHER', methods: ['MANUAL', 'POSTS', 'ACTIVITY'] }
   };
-  var METHOD_DEFAULT_TYPE = { RATIO: 'INPATIENT', ACUITY: 'INPATIENT', CLINIC: 'OPD', ACTIVITY: 'OPD', OR: 'OR', ER: 'ER',
+  var METHOD_DEFAULT_TYPE = { MANUAL: 'OTHER', RATIO: 'INPATIENT', ACUITY: 'INPATIENT', CLINIC: 'OPD', ACTIVITY: 'OPD', OR: 'OR', ER: 'ER',
     DELIVERY: 'DELIVERY', PROCEDURE: 'PROCEDURE', CSSD: 'CSSD', POSTS: 'OTHER' };
 
   var RELATION_TYPES = ['', 'SUBSET_OF', 'POSSIBLE_DUPLICATE_OF'];
@@ -349,6 +356,14 @@ function NWC_ENGINE_FACTORY_() {
   }
 
   var CALC = {
+    MANUAL: function (u, p, ctx) {
+      var missing = [], lines = [];
+      var fte = need(p, 'requiredFTE', 'Required FTE', missing);
+      if (missing.length || !ctx.hours.hoursPerFTE) return { hours: null, missing: missing, lines: lines };
+      var hours = fte * ctx.hours.hoursPerFTE;   // expressed as hours so overtime uses the same chain as other methods
+      lines.push('Required FTE entered manually: ' + fmt(fte));
+      return { hours: hours, shiftHours: hours, missing: [], lines: lines };
+    },
     RATIO: function (u, p, ctx, sch) {
       var missing = [], lines = [];
       var beds = need(p, 'beds', 'Operational beds', missing);
@@ -1138,6 +1153,26 @@ function NWC_ENGINE_FACTORY_() {
     return u;
   }
 
+  /**
+   * Switch every non-inpatient unit to MANUAL, prefilled with its current Base Required FTE
+   * (rounded to 2 dp) so results do not jump. Other methods' inputs stay in params (not deleted).
+   * Units with Data Required get a blank value. Returns the ids that were converted.
+   */
+  function convertOtherToManual(state) {
+    var res = calculate(state), byId = {}, done = [];
+    res.units.forEach(function (r) { byId[r.id] = r; });
+    (state.units || []).forEach(function (u) {
+      if (u.section === 'INPATIENT' || u.method === 'MANUAL') return;
+      var r = byId[u.id];
+      var base = r && r.baseRequiredFTE !== null && r.baseRequiredFTE !== undefined && !r.isOverride ? round2(r.baseRequiredFTE) : '';
+      if (r && r.isOverride) base = '';
+      switchMethod(u, 'MANUAL');
+      u.params.MANUAL.requiredFTE = u.isOpen === false ? '' : base;
+      done.push(u.id);
+    });
+    return done;
+  }
+
   function newContribution(id, category, unitId) {
     return { id: id, category: category === 'PCA' ? 'PCA' : 'CNC', staffRef: '', unitId: unitId || '', allocatedFTE: '',
       contributionPct: '', approved: false, countedInRNFTE: false, notes: '' };
@@ -1149,7 +1184,7 @@ function NWC_ENGINE_FACTORY_() {
     CONTRIB_CATEGORIES: CONTRIB_CATEGORIES,
     calculate: calculate, monthInfo: monthInfo, hoursModel: hoursModel, scheduleHours: scheduleHours,
     defaultSettings: defaultSettings, normalizeSettings: normalizeSettings, newUnit: newUnit, blankParams: blankParams,
-    switchMethod: switchMethod, unitTypeOf: unitTypeOf, allowedMethods: allowedMethods, newContribution: newContribution,
+    switchMethod: switchMethod, convertOtherToManual: convertOtherToManual, unitTypeOf: unitTypeOf, allowedMethods: allowedMethods, newContribution: newContribution,
     num: num, bool: bool, round2: round2, ceilSafe: ceilSafe, isBlank: isBlank, normName: normName, clone: clone
   };
 }

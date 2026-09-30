@@ -194,7 +194,7 @@ test('save rejects over-allocation, duplicate allocation and an OPD unit on a no
   assert.match(all, /OPD\) units may only use/);
 });
 
-test('v1 → v2 migration: unit types added, CNC hours converted, saved inputs untouched', () => {
+test('v1 → v3 migration: unit types, CNC hours converted, Other & OPD manual, saved inputs untouched', () => {
   const c = createContext();
   c.initializeSystem();
   const ss = c.__ss;
@@ -202,6 +202,10 @@ test('v1 → v2 migration: unit types added, CNC hours converted, saved inputs u
   const meta = ss.sheets._Meta; meta.data.find(r => r[0] === 'schema_version')[1] = '1';
   const units = ss.sheets.Units; const col = units.data[0].indexOf('unit_type');
   units.data.forEach((r, i) => { if (i) r[col] = ''; });
+  // A real v1 sheet still has the original workload methods (v3 switches Other & OPD to manual).
+  const mcol = units.data[0].indexOf('method'), seedMethods = {};
+  c.getSeedUnits_().forEach(u => { seedMethods[u.id] = u.method; });
+  units.data.forEach((r, i) => { if (i && seedMethods[r[0]]) r[mcol] = seedMethods[r[0]]; });
   const picu = units.data.findIndex(r => r[0] === 'U-PICU');
   const occBefore = units.data[picu][units.data[0].indexOf('params_json')];
   const leg = ss.insertSheet('CNC_Contributions');
@@ -214,6 +218,8 @@ test('v1 → v2 migration: unit types added, CNC hours converted, saved inputs u
   assert.match(msg, /Migrated 2 CNC row/);
   const st = c.getAppData().state;
   assert.equal(st.units.find(u => u.id === 'U-OPD-SURG').unitType, 'OPD');
+  assert.equal(st.units.find(u => u.id === 'U-OPD-SURG').method, 'MANUAL', 'v3 step ran after v2');
+  assert.match(msg, /Switched 10 Other & OPD unit/);
   assert.equal(st.units.find(u => u.id === 'U-PICU').unitType, 'INPATIENT');
   const a = st.contributions.find(x => x.id === 'C-1');
   assert.equal(a.category, 'CNC');
@@ -255,4 +261,23 @@ test('relief settings: legacy sheet without the new rows loads with defaults; ch
   d = J(c.getAppData());
   d.state.settings.reliefFactor = 2;
   assert.equal(c.saveAppData({ state: d.state, revision: d.revision }).ok, false);
+});
+
+test('v3 migration on an existing v2 sheet: Other & OPD switch to manual with their current values; runs once', () => {
+  const c = createContext();
+  c.initializeSystem();
+  // Rebuild a v2 sheet: original methods, schema 2.
+  const ss = c.__ss, units = ss.sheets.Units, mcol = units.data[0].indexOf('method'), pcol = units.data[0].indexOf('params_json');
+  const seed = {}; c.getSeedUnits_().forEach(u => { seed[u.id] = u; });
+  units.data.forEach((r, i) => { if (i && seed[r[0]]) { r[mcol] = seed[r[0]].method; r[pcol] = JSON.stringify(seed[r[0]].params); } });
+  ss.sheets._Meta.data.find(r => r[0] === 'schema_version')[1] = '2';
+  const v2 = c.NwcCalc.calculate({ settings: c.readSettings_(), units: c.readUnits_(), transfers: [], contributions: [] });
+  const msg = c.initializeSystem();
+  assert.match(msg, /Switched 10 Other & OPD unit/);
+  const st = c.getAppData().state;
+  const opd = st.units.find(u => u.id === 'U-OPD-MED');
+  assert.equal(opd.method, 'MANUAL');
+  assert.equal(opd.params.MANUAL.requiredFTE, Math.round(v2.units.find(u => u.id === 'U-OPD-MED').baseRequiredFTE * 100) / 100);
+  assert.equal(opd.params.CLINIC.clinics, 30, 'old inputs kept for Full view');
+  assert.match(c.initializeSystem(), /nothing changed/);
 });
