@@ -171,6 +171,11 @@ estimated OT cost         = feasible × hourly rate, or "Rate Required"
 | `CNC_Contributions` | — | v1 only. Read once by the migration, then left untouched. |
 | `Results`, `Audit_Log`, `_Meta` | — | Results are derived output. `_Meta` holds seeded, revision, schema_version. |
 
+**Deleting units:** "Delete" in the UI archives the unit (kept in the sheet, excluded from calculations, restorable
+from Settings → Deleted units). "Delete permanently" sends `deletedUnitIds` with the save; only those ids are removed
+from the `Units` sheet (`writeTable_(…, dropKeys)`), together with transfers/allocations that reference them and
+relations pointing at them, and `Audit_Log` records it. Any other unit missing from a payload is still kept.
+
 **Migration v1 → v2** runs automatically from `initializeSystem()` or on the
 first `getAppData()` when `schema_version < 2`:
 - It fills a blank `unit_type` from the method.
