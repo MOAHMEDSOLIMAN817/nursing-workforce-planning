@@ -248,6 +248,7 @@ function readSettings_() {
   NwcCalc.SETTINGS_FIELDS.forEach(function (f) {
     var v = f.key in raw ? raw[f.key] : f.def;
     if (f.type === 'number') out[f.key] = cellNum_(v);
+    else if (f.type === 'bool') out[f.key] = cellBool_(v);
     else if (f.type === 'month') out[f.key] = cellStr_(v);
     else out[f.key] = cellStr_(v);
   });

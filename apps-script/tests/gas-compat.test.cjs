@@ -121,7 +121,7 @@ test('Results sheet lists every active unit and the summary', () => {
   assert.equal(or[hdr.indexOf('Required FTE')], 'Data Required', 'missing data never written as 0');
 });
 
-test('delivery and fixed-posts methods apply workload and minimum coverage', () => {
+test('delivery adds workload to minimum coverage; fixed posts use the minimum', () => {
   const { NwcCalc: C } = createContext();
   const s = Object.assign(C.defaultSettings(), { reportingMonth: '2026-10' });
   const dr = C.newUnit('DR', 'DR', 'OTHER', 'DELIVERY');
@@ -133,10 +133,11 @@ test('delivery and fixed-posts methods apply workload and minimum coverage', () 
   p.minRNPerShift = 1; p.params.POSTS = { rnPosts: 3 };
   const r = C.calculate({ settings: s, units: [dr, p], transfers: [], contributions: [] });
   const u = id => r.units.find(x => x.id === id);
-  assert.ok(Math.abs(u('DR').coverageHours - Math.max(1200 + 100, 744)) < 1e-9);
+  // v3: minimum coverage + delivery care + assessments (additive).
+  assert.ok(Math.abs(u('DR').coverageHours - (744 + 1200 + 100)) < 1e-9);
   dr.params.DELIVERY.deliveriesPerMonth = 10;
   const r2 = C.calculate({ settings: s, units: [dr], transfers: [], contributions: [] });
-  assert.ok(Math.abs(r2.units[0].coverageHours - 744) < 1e-9, 'minimum 1 RN × 744 h applies');
+  assert.ok(Math.abs(r2.units[0].coverageHours - (744 + 120 + 100)) < 1e-9, 'minimum 1 RN × 744 h plus workload');
   assert.ok(Math.abs(u('AN').coverageHours - 3 * 26 * 10) < 1e-9);
 });
 

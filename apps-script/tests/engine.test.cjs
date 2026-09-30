@@ -7,8 +7,8 @@ const E = loadEngine();
 const C = E.NwcCalc;
 const close = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} ≈ ${b}`);
 
-// October 2026: 31 days, 5 Fridays. DEDUCT hours per FTE = 48 × 31 / 7 − 30.
-const HPF = 48 * 31 / 7 - 30;
+// October 2026: 31 days, 5 Fridays. Available hours per FTE = 48 × 31 / 7 (no automatic leave deduction in v3).
+const HPF = 48 * 31 / 7;
 function baseSettings(over) { return Object.assign(C.defaultSettings(), { reportingMonth: '2026-10' }, over || {}); }
 function state(units, over) {
   return Object.assign({ settings: baseSettings(), units, transfers: [], contributions: [] }, over || {});
@@ -39,24 +39,27 @@ test('calendar: actual days and Fridays for the reporting month', () => {
   assert.equal(C.monthInfo('bad'), null);
 });
 
-test('hours per FTE: leave deducted exactly once (DEDUCT) and ignored in UPLIFT', () => {
+test('hours per FTE: available hours are not reduced by leave; leave hours only suggest a factor', () => {
   const mi = C.monthInfo('2026-10');
-  close(C.hoursModel(baseSettings(), mi).hoursPerFTE, HPF);
-  const u = C.hoursModel(baseSettings({ fteMode: 'UPLIFT', reliefUpliftPct: 15 }), mi);
-  close(u.hoursPerFTE, 48 * 31 / 7 / 1.15);
-  assert.equal(C.hoursModel(baseSettings({ fteMode: 'UPLIFT', leaveHours: 100 }), mi).hoursPerFTE, u.hoursPerFTE);
-  assert.equal(C.hoursModel(baseSettings({ scheduledHoursOverride: 200 }), mi).hoursPerFTE, 170);
+  const h = C.hoursModel(baseSettings(), mi);
+  close(h.hoursPerFTE, HPF);
+  assert.equal(h.applyReliefFactor, false);
+  assert.equal(h.effectiveFactor, 1);
+  close(h.productiveHoursPerFTE, HPF);
+  close(h.suggestedFactor, HPF / (HPF - 30));
+  assert.equal(C.hoursModel(baseSettings({ leaveHours: 100 }), mi).hoursPerFTE, h.hoursPerFTE, 'leave never deducted');
+  assert.equal(C.hoursModel(baseSettings({ scheduledHoursOverride: 208 }), mi).hoursPerFTE, 208);
+  assert.equal(C.hoursModel(baseSettings({ fteMode: 'UPLIFT', reliefUpliftPct: 40 }), mi).hoursPerFTE, h.hoursPerFTE, 'legacy fields ignored');
   const w = unitRes(C.calculate(state([ward('W')])), 'W');
   close(w.requiredFTE, w.coverageHours / HPF);
-  const wu = unitRes(C.calculate(state([ward('W')], { settings: baseSettings({ fteMode: 'UPLIFT' }) })), 'W');
-  close(wu.requiredFTE, w.coverageHours / (48 * 31 / 7) * 1.15);
 });
 
 test('full precision is kept; rounding is display-only', () => {
-  const w = unitRes(C.calculate(state([ward('W')])), 'W');
-  close(w.requiredFTE, WARD_REQ, 1e-12);
+  const u = ward('W'); u.params.RATIO.beds = 19;   // 15.2 ÷ 4 = 3.8 RN × 744 h = 2827.2 h
+  const w = unitRes(C.calculate(state([u])), 'W');
+  close(w.requiredFTE, 2827.2 / HPF, 1e-12);
   assert.notEqual(w.requiredFTE, Math.round(w.requiredFTE * 100) / 100, 'not pre-rounded');
-  assert.equal(w.establishment, Math.ceil(WARD_REQ));
+  assert.equal(w.establishment, Math.ceil(2827.2 / HPF));
 });
 
 test('inpatient ratio and minimum; zero activity open vs closed', () => {
@@ -209,18 +212,18 @@ test('unallocated CNC/PCA capacity is never credited', () => {
 });
 
 test('waterfall: per-unit shortage after each credit; steps reconcile to final', () => {
-  const s = state([ward('A', { currentRNHeadcount: 10 }), ward('B', { currentRNHeadcount: 30 })], {
+  const s = state([ward('A', { currentRNHeadcount: 8 }), ward('B', { currentRNHeadcount: 30 })], {
     contributions: [alloc('c', 'CNC', 'A', 2, 50), alloc('p', 'PCA', 'A', 4, 25)],
     transfers: [{ id: 't', sourceUnitId: 'B', destUnitId: 'A', fte: 3, competencyConfirmed: true, coverageCompatible: true }]
   });
   const r = C.calculate(s);
   const w = Object.fromEntries(r.summary.waterfall.map(x => [x.key, x.value]));
-  close(w.gross, WARD_REQ - 10);
+  close(w.gross, WARD_REQ - 8);
   close(w.cnc, -1);
   close(w.transfer, -3);
-  close(w.rn, WARD_REQ - 14);
+  close(w.rn, WARD_REQ - 12);
   close(w.pca, -1);
-  close(w.final, WARD_REQ - 15);
+  close(w.final, WARD_REQ - 13);
   assert.ok(r.checks.every(c => c.ok), JSON.stringify(r.checks.filter(c => !c.ok)));
 });
 
@@ -248,7 +251,7 @@ test('transfers: only confirmed compatible transfers count, never creating a sou
 });
 
 test('transfer spare uses qualified coverage only: PCA credit cannot free RNs to transfer', () => {
-  const src = ward('SRC', { currentRNHeadcount: 17 }), dst = ward('DST', { currentRNHeadcount: 10 });
+  const src = ward('SRC', { currentRNHeadcount: 15 }), dst = ward('DST', { currentRNHeadcount: 10 });  // spare 1 FTE
   const s = state([src, dst], {
     contributions: [alloc('p', 'PCA', 'SRC', 10, 100)],
     transfers: [{ id: 't', sourceUnitId: 'SRC', destUnitId: 'DST', fte: 2, competencyConfirmed: true, coverageCompatible: true }]
@@ -295,9 +298,10 @@ test('overtime: per-unit formula chain with insufficient capacity', () => {
 });
 
 test('overtime: capacity sufficient → remaining uncovered 0; max hours editable', () => {
-  const r = C.calculate(state([ward('W', { currentRNHeadcount: 15 })], { settings: OT({ otMaxHoursPerRN: 60 }) }));
+  const r = C.calculate(state([ward('W', { currentRNHeadcount: 13 })], { settings: OT({ otMaxHoursPerRN: 60 }) }));
   const w = unitRes(r, 'W');
-  close(w.uncoveredHours, 2976 - 15 * HPF);
+  close(w.uncoveredHours, 2976 - 13 * HPF);
+  assert.ok(w.uncoveredHours > 0);
   assert.ok(w.uncoveredHours < 900);
   close(w.feasibleOT, w.uncoveredHours);
   assert.equal(w.remainingUncoveredHours, 0);
@@ -463,4 +467,102 @@ test('seed reconciliation checks all pass', () => {
   const r = C.calculate(seedState());
   assert.equal(errors(r).length, 0);
   assert.ok(r.checks.every(c => c.ok), JSON.stringify(r.checks.filter(c => !c.ok)));
+});
+
+// -----------------------------------------------------------------------------
+// v3: optional Leave & Absence Coverage (relief factor) — Delivery Room example
+//   5 deliveries × 5 RN h + 3 RN × 24 h × 30 days = 2185 h; 208 h per FTE.
+// -----------------------------------------------------------------------------
+function deliveryRoom(current) {
+  const u = C.newUnit('DR', 'Delivery Room', 'OTHER', 'DELIVERY');
+  u.minRNPerShift = 3; u.currentRNHeadcount = current;
+  u.schedule = { weekdayHours: 24, openDays: 'Sat,Sun,Mon,Tue,Wed,Thu', fridayHours: 24, holidayHours: 24 };
+  u.params.DELIVERY = { deliveriesPerMonth: 5, rnHoursPerDelivery: 5, otherCasesPerMonth: '', minutesPerOtherCase: '' };
+  return u;
+}
+function drRun(current, over) {
+  const s = Object.assign(C.defaultSettings(), { reportingMonth: '2026-09', scheduledHoursOverride: 208 }, over || {});
+  const r = C.calculate({ settings: s, units: [deliveryRoom(current)], transfers: [], contributions: [] });
+  return { r, u: r.units[0] };
+}
+const r2 = n => Math.round(n * 100) / 100;
+
+test('relief TEST 1 — coverage disabled: Base 10.50 = Final 10.50', () => {
+  const { u } = drRun(12);
+  assert.equal(u.coverageHours, 2185);
+  close(u.baseRequiredFTE, 2185 / 208);
+  assert.equal(r2(u.baseRequiredFTE), 10.5);
+  assert.equal(u.requiredFTE, u.baseRequiredFTE);
+  assert.equal(u.coverageAdditionFTE, 0);
+  assert.equal(u.reliefFactorApplied, null);
+});
+
+test('relief TEST 2 — coverage enabled at 1.17: Final 12.29, addition +1.79', () => {
+  const { u } = drRun(12, { applyReliefFactor: true, reliefFactor: 1.17 });
+  assert.equal(r2(u.baseRequiredFTE), 10.5);
+  close(u.requiredFTE, 2185 / 208 * 1.17);
+  assert.equal(r2(u.requiredFTE), 12.29);
+  assert.equal(r2(u.coverageAdditionFTE), 1.79);
+  assert.equal(u.reliefFactorApplied, 1.17);
+});
+
+test('relief TEST 3 — custom factor 1.10: Final ≈ 11.56', () => {
+  const { u } = drRun(12, { applyReliefFactor: true, reliefFactor: 1.10 });
+  assert.equal(r2(u.requiredFTE), 11.56);
+});
+
+test('relief TEST 4 — legacy record without the new fields defaults to off / 1.17', () => {
+  const legacy = { reportingMonth: '2026-09', contractedWeeklyHours: 48, fteMode: 'DEDUCT', leaveHours: 20, trainingHours: 4, otherUnavailableHours: 6 };
+  const r = C.calculate({ settings: legacy, units: [deliveryRoom(12)], transfers: [], contributions: [] });
+  assert.equal(r.hours.applyReliefFactor, false);
+  assert.equal(r.hours.reliefFactor, 1.17);
+  assert.equal(r.units[0].requiredFTE, r.units[0].baseRequiredFTE);
+  assert.equal(r.issues.filter(i => i.level === 'error').length, 0);
+  // Missing / blank values fall back safely.
+  assert.equal(C.hoursModel({ contractedWeeklyHours: 48, reliefFactor: '' }, C.monthInfo('2026-09')).reliefFactor, 1.17);
+  // String booleans from the sheet are understood.
+  assert.equal(C.hoursModel({ contractedWeeklyHours: 48, applyReliefFactor: 'TRUE' }, C.monthInfo('2026-09')).applyReliefFactor, true);
+});
+
+test('relief TEST 5 — gap uses FINAL required: 12.29 required vs 12 available = Shortage 0.29', () => {
+  const { u } = drRun(12, { applyReliefFactor: true });
+  assert.equal(u.availableFTE, 12);
+  assert.equal(r2(u.adjustedGap), 0.29);
+  assert.ok(u.adjustedGap > 0, 'positive = shortage');
+  assert.equal(u.status, C.STATUS.GAP);
+});
+
+test('relief TEST 6 — surplus: 10.50 required vs 12 available = Surplus 1.50', () => {
+  const { u } = drRun(12);
+  assert.equal(r2(u.adjustedGap), -1.5);
+  assert.equal(u.status, C.STATUS.MET);
+});
+
+test('relief: overtime = MAX(final − current, 0) × productive hours (factor never counted as work)', () => {
+  const off = drRun(12).u;
+  assert.equal(off.uncoveredHours, 0);
+  const { r, u } = drRun(12, { applyReliefFactor: true, otEligiblePct: 100 });
+  close(r.hours.productiveHoursPerFTE, 208 / 1.17);
+  close(u.uncoveredHours, (u.requiredFTE - 12) * 208 / 1.17, 1e-6);
+  close(u.uncoveredHours, 2185 - 12 * 208 / 1.17, 1e-6);   // = required hours − what 12 FTE actually cover
+  close(u.remainingRecruitFTE * r.hours.productiveHoursPerFTE, u.remainingUncoveredHours, 1e-6);
+  assert.ok(r.checks.every(c => c.ok), JSON.stringify(r.checks.filter(c => !c.ok)));
+});
+
+test('relief: factor applies to every method centrally; manual override is final (not multiplied)', () => {
+  const on = baseSettings({ applyReliefFactor: true, reliefFactor: 1.2 });
+  const ovr = C.newUnit('A', 'Anes', 'OTHER', 'POSTS'); ovr.manualOverrideFTE = 5; ovr.manualOverrideReason = 'agreed';
+  const r = C.calculate(state([ward('W'), ovr], { settings: on }));
+  close(unitRes(r, 'W').requiredFTE, WARD_REQ * 1.2);
+  close(unitRes(r, 'W').baseRequiredFTE, WARD_REQ);
+  assert.equal(unitRes(r, 'A').requiredFTE, 5);
+  assert.equal(unitRes(r, 'A').coverageAdditionFTE, 0);
+  close(r.summary.requiredFTE, r.summary.baseRequiredFTE + r.summary.coverageAdditionFTE);
+});
+
+test('relief: factor limits 1.00–1.50 validated', () => {
+  const bad = C.calculate(state([ward('W')], { settings: baseSettings({ applyReliefFactor: true, reliefFactor: 1.8 }) }));
+  assert.match(bad.issues.filter(i => i.level === 'error').map(i => i.message).join(), /Relief Factor must not exceed 1.5/);
+  const low = C.calculate(state([ward('W')], { settings: baseSettings({ reliefFactor: 0.9 }) }));
+  assert.match(low.issues.filter(i => i.level === 'error').map(i => i.message).join(), /Relief Factor must be at least 1/);
 });

@@ -20,7 +20,7 @@
 function NWC_ENGINE_FACTORY_() {
   'use strict';
 
-  var VERSION = '2.0.0';
+  var VERSION = '3.0.0';
   var EPS = 1e-9;
 
   var STATUS = {
@@ -46,16 +46,19 @@ function NWC_ENGINE_FACTORY_() {
 
     { key: 'contractedWeeklyHours', group: 'Hours per FTE', label: 'Contracted weekly hours', type: 'number', def: 48, min: 0.01 },
     { key: 'shiftLengthHours', group: 'Hours per FTE', label: 'Shift length (hours)', type: 'number', def: 12, min: 0.01 },
-    { key: 'scheduledHoursOverride', group: 'Hours per FTE', label: 'Scheduled monthly hours (manual override)', type: 'number', def: '', min: 0.01, optional: true,
-      help: 'Leave blank to use weekly hours × calendar days ÷ 7.' },
-    { key: 'fteMode', group: 'Hours per FTE', label: 'FTE method', type: 'enum', def: 'DEDUCT', options: ['DEDUCT', 'UPLIFT'] },
-    { key: 'leaveHours', group: 'Hours per FTE', label: 'Leave hours per FTE per month', type: 'number', def: 20, min: 0,
-      help: 'Used only in "Deduct unavailable hours" mode.' },
-    { key: 'trainingHours', group: 'Hours per FTE', label: 'Training hours per FTE per month', type: 'number', def: 4, min: 0 },
-    { key: 'otherUnavailableHours', group: 'Hours per FTE', label: 'Other unavailable hours per FTE per month', type: 'number', def: 6, min: 0,
-      help: 'Sickness, meetings and other non-coverage time.' },
-    { key: 'reliefUpliftPct', group: 'Hours per FTE', label: 'Relief uplift %', type: 'number', def: 15, min: 0, max: 200,
-      help: 'Used only in "Relief uplift" mode.' },
+    { key: 'scheduledHoursOverride', group: 'Hours per FTE', label: 'Available monthly hours per FTE (override)', type: 'number', def: '', min: 0.01, optional: true,
+      help: 'Blank = weekly hours × calendar days ÷ 7 (48 h → 205.71 h in a 30-day month). Enter 208 for 48 × 52 ÷ 12.' },
+    { key: 'applyReliefFactor', group: 'Leave & absence coverage', label: 'Include Leave & Absence Coverage', type: 'bool', def: false,
+      help: 'Optional coverage for annual leave, days off, sickness and unplanned absence.' },
+    { key: 'reliefFactor', group: 'Leave & absence coverage', label: 'Coverage / Relief Factor', type: 'number', def: 1.17, min: 1, max: 1.5, step: 0.01,
+      help: 'Final Required FTE = Base Required FTE × factor (only when coverage is included).' },
+    { key: 'leaveHours', group: 'Leave & absence coverage', label: 'Leave hours per FTE per month (reference)', type: 'number', def: 20, min: 0,
+      help: 'Not deducted from hours. Used only to suggest a relief factor.' },
+    { key: 'trainingHours', group: 'Leave & absence coverage', label: 'Training hours per FTE per month (reference)', type: 'number', def: 4, min: 0 },
+    { key: 'otherUnavailableHours', group: 'Leave & absence coverage', label: 'Other unavailable hours per FTE per month (reference)', type: 'number', def: 6, min: 0 },
+    // v2 settings kept only so saved data round-trips; ignored by the v3 engine and hidden in the UI.
+    { key: 'fteMode', group: 'Legacy', label: 'FTE method (legacy, ignored)', type: 'enum', def: 'DEDUCT', options: ['DEDUCT', 'UPLIFT'], legacy: true },
+    { key: 'reliefUpliftPct', group: 'Legacy', label: 'Relief uplift % (legacy, ignored)', type: 'number', def: 15, min: 0, max: 200, legacy: true },
     { key: 'requirementBasis', group: 'Hours per FTE', label: 'Requirement basis', type: 'enum', def: 'AVERAGE', options: ['AVERAGE', 'WHOLE_SHIFT'],
       help: 'Average workload FTE, or the FTE needed to staff whole nurses on every shift.' },
 
@@ -257,10 +260,15 @@ function NWC_ENGINE_FACTORY_() {
   }
 
   /**
-   * Hours per FTE. Two mutually exclusive modes:
-   *  DEDUCT: available = scheduled − leave − training − other; FTE = hours ÷ available.
-   *  UPLIFT: FTE = hours ÷ scheduled × (1 + uplift). Leave fields are ignored.
-   * hoursPerFTE is the single divisor used everywhere (FTE, supply hours, recruitment).
+   * Hours per FTE (v3).
+   *  hoursPerFTE           = available monthly hours per FTE (weekly × days ÷ 7, or the override).
+   *                          Base Required FTE = required hours ÷ hoursPerFTE.
+   *  applyReliefFactor     = optional leave & absence coverage (default off).
+   *  effectiveFactor       = reliefFactor when applied, else 1. Final Required FTE = Base × effectiveFactor.
+   *  productiveHoursPerFTE = hoursPerFTE ÷ effectiveFactor — the hours one FTE actually covers.
+   *                          Used for supply, uncovered/overtime hours and recruitment, so that
+   *                          Final FTE × productive hours = required hours (the factor is never counted as work).
+   * Leave/training/other hours are reference only: they suggest a factor but are never deducted.
    */
   function hoursModel(settings, mi) {
     var s = settings || {};
@@ -268,25 +276,18 @@ function NWC_ENGINE_FACTORY_() {
     var override = num(s.scheduledHoursOverride);
     var days = mi ? mi.days : null;
     var scheduled = override !== null ? override : (weekly !== null && days ? weekly * days / 7 : null);
-    var mode = s.fteMode === 'UPLIFT' ? 'UPLIFT' : 'DEDUCT';
-    var leave = num(s.leaveHours) || 0, training = num(s.trainingHours) || 0, other = num(s.otherUnavailableHours) || 0;
-    var uplift = (num(s.reliefUpliftPct) || 0) / 100;
+    var apply = bool(s.applyReliefFactor);
+    var factor = num(s.reliefFactor);
+    if (factor === null) factor = 1.17;
+    var unavailable = (num(s.leaveHours) || 0) + (num(s.trainingHours) || 0) + (num(s.otherUnavailableHours) || 0);
     var out = {
-      mode: mode, scheduledHours: scheduled, scheduledSource: override !== null ? 'Manual override' : 'Weekly hours × days ÷ 7',
-      unavailableHours: mode === 'DEDUCT' ? leave + training + other : 0,
-      availableHours: null, uplift: mode === 'UPLIFT' ? uplift : 0, hoursPerFTE: null, equivalentUpliftPct: null
+      scheduledHours: scheduled, scheduledSource: override !== null ? 'Manual override' : 'Weekly hours × days ÷ 7',
+      hoursPerFTE: scheduled > 0 ? scheduled : null,
+      applyReliefFactor: apply, reliefFactor: factor, effectiveFactor: apply ? factor : 1,
+      productiveHoursPerFTE: null, unavailableHours: unavailable, suggestedFactor: null
     };
-    if (scheduled === null) return out;
-    if (mode === 'DEDUCT') {
-      out.availableHours = scheduled - out.unavailableHours;
-      out.hoursPerFTE = out.availableHours;
-      if (out.availableHours > 0) out.equivalentUpliftPct = (scheduled / out.availableHours - 1) * 100;
-    } else {
-      out.availableHours = scheduled;
-      out.hoursPerFTE = scheduled / (1 + uplift);
-      out.equivalentUpliftPct = uplift * 100;
-    }
-    if (!(out.hoursPerFTE > 0)) out.hoursPerFTE = null;
+    if (out.hoursPerFTE && out.effectiveFactor > 0) out.productiveHoursPerFTE = out.hoursPerFTE / out.effectiveFactor;
+    if (scheduled > unavailable && unavailable > 0) out.suggestedFactor = scheduled / (scheduled - unavailable);
     return out;
   }
 
@@ -459,9 +460,13 @@ function NWC_ENGINE_FACTORY_() {
       var minRN = need(u, 'minRNPerShift', 'Minimum RN (concurrent)', missing);
       missing = missing.concat(sch.missing);
       if (missing.length) return { hours: null, missing: missing, lines: lines };
+      // Minimum staffing covers the unit while open; delivery care and assessments are added on top.
       var other = (num(p.otherCasesPerMonth) || 0) * (num(p.minutesPerOtherCase) || 0) / 60;
+      var minHours = minRN * sch.hours;
+      lines.push('Minimum coverage = ' + minRN + ' RN × ' + fmt(sch.hours) + ' open h = ' + fmt(minHours) + ' h');
       lines.push('Delivery workload = ' + n + ' × ' + h + ' h = ' + fmt(n * h) + ' h; other assessments ' + fmt(other) + ' h');
-      return { hours: withMinimum(n * h + other, minRN, sch.hours, lines), missing: [], lines: lines };
+      lines.push('Required hours = ' + fmt(minHours) + ' + ' + fmt(n * h) + ' + ' + fmt(other) + ' = ' + fmt(minHours + n * h + other) + ' h');
+      return { hours: minHours + n * h + other, shiftHours: wholeShift(minHours, sch.hours) + n * h + other, missing: [], lines: lines };
     },
     PROCEDURE: function (u, p, ctx, sch) {
       var missing = [], lines = [];
@@ -578,7 +583,7 @@ function NWC_ENGINE_FACTORY_() {
     });
     if (!ctx.month) issue(list, 'error', 'Settings', 'Reporting month must be in YYYY-MM format.', '', 'reportingMonth');
     if (ctx.hours.scheduledHours !== null && !(ctx.hours.hoursPerFTE > 0)) {
-      issue(list, 'error', 'Settings', 'Available coverage hours per FTE must be positive (scheduled hours minus leave, training and other unavailable hours).', '', 'leaveHours');
+      issue(list, 'error', 'Settings', 'Available monthly hours per FTE must be positive.', '', 'scheduledHoursOverride');
     }
     if (ctx.hours.scheduledHours === null) issue(list, 'error', 'Settings', 'Scheduled monthly hours cannot be calculated: enter weekly hours or an override.', '', 'contractedWeeklyHours');
     ['cnc', 'pca'].forEach(function (k) {
@@ -756,14 +761,14 @@ function NWC_ENGINE_FACTORY_() {
   // Unit calculation (before transfers)
   // ---------------------------------------------------------------------------
   function calcUnit(u, ctx, contrib) {
-    var hpf = ctx.hours.hoursPerFTE;
+    var hpf = ctx.hours.hoursPerFTE, prod = ctx.hours.productiveHoursPerFTE, factor = ctx.hours.effectiveFactor;
     var basis = ctx.settings.requirementBasis === 'WHOLE_SHIFT' ? 'WHOLE_SHIFT' : 'AVERAGE';
     var r = {
       id: u.id, name: u.name, section: u.section, unitType: unitTypeOf(u), method: u.method,
       methodLabel: METHODS[u.method] ? METHODS[u.method].label : u.method,
       isOpen: u.isOpen !== false && u.isOpen !== 'FALSE', status: null, missing: [], lines: [], notes: [],
       openHours: null, coverageHours: null, avgHours: null, shiftHours: null, avgFTE: null, shiftFTE: null, basis: basis,
-      avgConcurrentRN: null, requiredFTE: null, establishment: null,
+      avgConcurrentRN: null, baseRequiredFTE: null, reliefFactorApplied: null, coverageAdditionFTE: null, requiredFTE: null, establishment: null,
       currentHC: num(u.currentRNHeadcount) || 0, currentFTE: null, currentFTEAssumed: false,
       cncFTE: contrib.cnc[u.id] || 0, pcaRawFTE: contrib.pca[u.id] || 0, pcaFTE: null, pcaCapped: false,
       shiftRN: null, shiftCensus: null, shiftCensusAssumed: false, occupied: null,
@@ -791,6 +796,7 @@ function NWC_ENGINE_FACTORY_() {
 
     if (!r.isOpen) {
       r.status = STATUS.CLOSED; r.coverageHours = 0; r.avgHours = 0; r.shiftHours = 0; r.requiredFTE = 0; r.avgFTE = 0; r.shiftFTE = 0;
+      r.baseRequiredFTE = 0; r.coverageAdditionFTE = 0;
       r.establishment = 0; r.openHours = 0;
       r.lines.push('Unit closed: no minimum coverage requirement.');
     } else {
@@ -815,9 +821,10 @@ function NWC_ENGINE_FACTORY_() {
       }
       var ovr = num(u.manualOverrideFTE);
       if (ovr !== null && !isBlank(u.manualOverrideReason)) {
+        // An override is the FINAL required FTE; the relief factor is not applied to it again.
         r.status = STATUS.OVERRIDE; r.isOverride = true;
-        r.requiredFTE = ovr;
-        r.coverageHours = hpf ? ovr * hpf : null;
+        r.requiredFTE = ovr; r.baseRequiredFTE = ovr; r.coverageAdditionFTE = 0;
+        r.coverageHours = prod ? ovr * prod : null;
         r.notes.push('Manual override: ' + u.manualOverrideReason);
         if (r.avgFTE !== null) r.notes.push('Method result would be ' + round2(basis === 'WHOLE_SHIFT' ? r.shiftFTE : r.avgFTE) + ' FTE.');
       } else if (r.avgHours === null || !hpf) {
@@ -825,7 +832,10 @@ function NWC_ENGINE_FACTORY_() {
         if (!hpf) r.missing.push('Valid hours per FTE (Settings)');
       } else {
         r.coverageHours = basis === 'WHOLE_SHIFT' ? r.shiftHours : r.avgHours;
-        r.requiredFTE = r.coverageHours / hpf;
+        r.baseRequiredFTE = r.coverageHours / hpf;
+        r.reliefFactorApplied = factor !== 1 ? factor : null;
+        r.requiredFTE = r.baseRequiredFTE * factor;
+        r.coverageAdditionFTE = r.requiredFTE - r.baseRequiredFTE;
       }
     }
     if (r.requiredFTE !== null) {
@@ -888,7 +898,7 @@ function NWC_ENGINE_FACTORY_() {
     var settings = normalizeSettings(state.settings);
     var mi = monthInfo(settings.reportingMonth);
     var hours = hoursModel(settings, mi);
-    var hpf = hours.hoursPerFTE;
+    var hpf = hours.productiveHoursPerFTE;   // hours one credited FTE actually covers (after optional relief)
     var ctx = { settings: settings, month: mi, hours: hours, unitIndex: {} };
     (state.units || []).forEach(function (u) { ctx.unitIndex[u.id] = u; });
     var norm = { settings: settings, units: state.units, transfers: state.transfers, contributions: state.contributions };
@@ -916,7 +926,7 @@ function NWC_ENGINE_FACTORY_() {
       r.otEligibleSource = eligOverride !== null ? 'Unit override' : (otPct !== null ? 'Settings ' + otPct + '%' : 'Not set');
       r.otEligibleHC = eligOverride !== null ? eligOverride : (otPct !== null ? Math.floor(r.currentHC * otPct / 100 + EPS) : null);
       if (r.requiredFTE === null) {
-        r.rnGap = r.adjustedGap = null;
+        r.rnGap = r.adjustedGap = r.availableFTE = null;
         r.requiredHours = r.availableQualifiedHours = r.uncoveredHours = r.otCapacity = r.feasibleOT = null;
         r.remainingUncoveredHours = r.remainingRecruitFTE = r.otCost = null;
         return;
@@ -924,6 +934,7 @@ function NWC_ENGINE_FACTORY_() {
       // Signed gaps: required − credited (positive = shortage).
       r.rnGap = r.requiredFTE - r.rnCreditedFTE;
       r.adjustedGap = r.rnGap - r.pcaFTE;
+      r.availableFTE = r.rnCreditedFTE + r.pcaFTE;   // gap = requiredFTE (final) − availableFTE
       if (!r.status) r.status = r.rnGap > EPS ? STATUS.GAP : STATUS.MET;
       // Estimated overtime required (full precision).
       r.requiredHours = r.coverageHours;
@@ -965,6 +976,9 @@ function NWC_ENGINE_FACTORY_() {
       completedUnits: known.length,
       totalsLabel: dataReq.length ? 'Completed units only — provisional' : (provisional.length ? 'Provisional' : 'All units'),
       requiredFTE: S(known, function (r) { return r.requiredFTE; }),
+      baseRequiredFTE: S(known, function (r) { return r.baseRequiredFTE; }),
+      coverageAdditionFTE: S(known, function (r) { return r.coverageAdditionFTE; }),
+      applyReliefFactor: hours.applyReliefFactor, reliefFactor: hours.reliefFactor,
       avgFTE: S(known, function (r) { return r.avgFTE; }),
       shiftFTE: S(known, function (r) { return r.shiftFTE; }),
       establishment: S(known, function (r) { return r.establishment; }),
@@ -1026,13 +1040,14 @@ function NWC_ENGINE_FACTORY_() {
       check('RN shortage − surplus = Σ unit RN gaps', sm.rnShortageFTE - sm.rnSurplusFTE, S(known, function (r) { return r.rnGap; })),
       check('Waterfall steps add up to the final planning shortage', s0 + (s1 - s0) + (s2 - s1) + (s3 - s2), sm.finalShortageFTE),
       check('Required FTE = sum of completed unit rows', sm.requiredFTE, S(known, function (r) { return r.requiredFTE; })),
+      check('Final required = base required + coverage addition', sm.requiredFTE, sm.baseRequiredFTE + sm.coverageAdditionFTE),
       check('Current RN headcount = sum of unit rows', sm.currentRNHC, S(counted, function (r) { return r.currentHC; })),
       check('Total headcount = RN + CNC + PCA/PCT', sm.totalHC, sm.currentRNHC + sm.cncHC + sm.pcaHC),
       check('Transfers sent = transfers received', S(counted, function (r) { return r.transferOut; }), S(counted, function (r) { return r.transferIn; })),
       check('CNC allocated ≤ CNC FTE available', Math.min(sm.cncAllocatedFTE, sm.cncAvailableFTE), sm.cncAllocatedFTE),
       check('PCA/PCT allocated ≤ PCA/PCT FTE available', Math.min(sm.pcaAllocatedFTE, sm.pcaAvailableFTE), sm.pcaAllocatedFTE)
     ];
-    if (!pcaRemovesRN && hpf) checks.push(check('Uncovered hours ÷ hours per FTE = RN coverage shortage', sm.uncoveredHours / hpf, sm.rnShortageFTE));
+    if (!pcaRemovesRN && hpf) checks.push(check('Uncovered hours ÷ productive hours per FTE = RN coverage shortage', sm.uncoveredHours / hpf, sm.rnShortageFTE));
     if (!otMissing && hpf) checks.push(check('Feasible OT + remaining recruitment × h/FTE = uncovered hours', sm.feasibleOTHours + sm.remainingRecruitFTE * hpf, sm.uncoveredHours));
 
     return {
@@ -1049,7 +1064,7 @@ function NWC_ENGINE_FACTORY_() {
     var cur = s.currencyLabel || '';
     function money(rate, qty) { var r = num(rate); return r === null || qty === null ? null : r * qty; }
     var rn = num(s.costRNMonthly), ot = num(s.costOTPerHour), tmp = num(s.costTempPerHour);
-    var hpf = hours.hoursPerFTE;
+    var hpf = hours.productiveHoursPerFTE;
     var options = [
       { option: 'Confirmed transfers', quantity: sm.transferFTE, unit: 'FTE',
         monthlyCost: 0, oneOffCost: money(s.costTransferPerFTE, sm.transferFTE),

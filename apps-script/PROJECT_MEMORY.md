@@ -2,7 +2,7 @@
 
 This file records calculation definitions, assumptions, structure and
 decisions. Update it whenever the engine changes. The engine version is
-**2.0.0** and the data schema version is **2**.
+**3.0.0** and the data schema version is **2** (v3 added two settings keys only).
 
 ## 1. Origin and workbook corrections
 
@@ -26,10 +26,18 @@ colour: "▲ Shortage x" (red) or "▼ Surplus x" (green).
 
 ## 3. Hours and FTE
 
-- Scheduled hours per FTE = weekly hours × calendar days ÷ 7, unless a manual override is set.
-- **DEDUCT** (default): hours per FTE = scheduled − leave − training − other.
-  **UPLIFT**: hours per FTE = scheduled ÷ (1 + uplift). Never both.
-- Required FTE = coverage hours ÷ hours per FTE. **Full precision is kept
+- **Available monthly hours per FTE** = weekly hours × calendar days ÷ 7, unless the override is set (e.g. 208 = 48 × 52 ÷ 12).
+- **Base Required FTE** = required nursing hours ÷ available monthly hours per FTE.
+- **Leave & Absence Coverage is optional (v3).** Settings `applyReliefFactor` (default `false`) and `reliefFactor` (default `1.17`, limits 1.00–1.50):
+  - off: Final Required FTE = Base Required FTE
+  - on:  Final Required FTE = Base Required FTE × reliefFactor; Coverage addition = Final − Base
+  - Legacy records without these keys load as off / 1.17 (`normalizeSettings` + `readSettings_` defaults).
+  - A manual override is the FINAL required FTE and is not multiplied again.
+- Leave, training and other hours are **reference only** in v3: they are never deducted, and are used only to show a
+  suggested factor = available ÷ (available − those hours). Legacy `fteMode` / `reliefUpliftPct` are kept in the sheet
+  for data round-trip but ignored and hidden. (v2 deducted 30 h by default, i.e. an automatic ≈ 17% relief.)
+- Gap = Final Required FTE − Available FTE (RN + CNC + transfers + approved PCA). "Balanced" within ±0.005.
+- Required FTE = Final Required FTE. **Full precision is kept
   throughout; only the UI and the Results sheet round (2 dp for FTE, whole
   numbers for hours).** Establishment = CEIL per unit.
 - **Requirement basis** (a Settings choice, global):
@@ -60,7 +68,9 @@ colour: "▲ Shortage x" (red) or "▼ Surplus x" (green).
   - ACUITY: mutually exclusive groups
   - OR: rooms × roles × hours (+ prep, recovery, emergency)
   - ER: MAX(volume × minutes, period minimum) for each period
-  - DELIVERY, PROCEDURE, CLINIC, ACTIVITY and POSTS: workload vs minimum
+  - DELIVERY (v3): minimum RN × open hours **+** deliveries × RN h per delivery **+** other assessments (additive;
+    v2 used MAX(workload, minimum)). Example: 3 × 24 × 30 + 5 × 5 = 2185 h → 2185 ÷ 208 = 10.50 FTE; × 1.17 = 12.29 FTE.
+  - PROCEDURE, CLINIC, ACTIVITY and POSTS: MAX(workload, minimum) — unchanged
   - CSSD: RN posts; technicians reported separately
 - Missing inputs give **Data Required** (null, never 0).
 
@@ -116,13 +126,14 @@ Adjusted planning gap = RN coverage gap − PCA credit     (the "Remaining gap")
 ## 7. Estimated overtime required (per unit, recalculated on every change)
 
 ```
-required hours            = coverage hours for the selected basis (override: FTE × h/FTE)
-available qualified hours = RN credited FTE × hours per FTE   (RN + CNC + confirmed transfers)
+productive h per FTE      = available h per FTE ÷ (reliefFactor if coverage on, else 1)
+required hours            = coverage hours for the selected basis (override: FTE × productive h)
+available qualified hours = RN credited FTE × productive h per FTE   (RN + CNC + confirmed transfers)
 uncovered hours           = MAX(required − [PCA hours if approved model removes them] − available, 0)
 OT capacity               = eligible RN headcount × max OT hours per RN (default 48, configurable)
 feasible OT               = MIN(uncovered, capacity)
 remaining uncovered       = MAX(uncovered − feasible, 0)
-remaining recruitment FTE = remaining uncovered ÷ hours per FTE
+remaining recruitment FTE = remaining uncovered ÷ productive h per FTE
 estimated OT cost         = feasible × hourly rate, or "Rate Required"
 ```
 
@@ -130,6 +141,8 @@ estimated OT cost         = feasible × hourly rate, or "Rate Required"
   default. A unit override (eligible headcount) takes precedence. With no
   eligibility, feasible OT, remaining hours, recruitment and cost show **Data
   Required**, except when uncovered hours = 0 (then everything is 0).
+- Equivalent form: uncovered = MAX(Final Required FTE − credited FTE, 0) × productive hours. The relief factor is
+  never counted as hours someone must work: Final FTE × productive hours = required hours.
 - PCA/PCT hours are subtracted only when `pcaReducesRNWorkload = YES`.
 - These are labelled "Estimated overtime required", not actual overtime worked
   or payroll payable.
@@ -162,7 +175,7 @@ first `getAppData()` when `schema_version < 2`:
 - OPD open 12 h Sat–Thu, Friday closed.
 - The combined Endoscopy/Cathlab current RN (2) is on Endoscopy.
 - ICU/NICU sub-rows and DR vs Delivery Room–NU are Unresolved.
-- Leave 20, training 4 and other 6 h per FTE per month.
+- Leave & absence coverage off; factor 1.17 when switched on. Reference leave 20, training 4, other 6 h (suggested factor ≈ 1.17).
 - CNC direct-care default 25%. PCA/PCT substitution default 25%, capped at 20% of unit required FTE.
 - Overtime max 48 h; eligibility not set.
 - No allocations are seeded: unit-level CNC/PCA data is required before any credit applies.
@@ -178,7 +191,7 @@ first `getAppData()` when `schema_version < 2`:
 - Functions called from menus or `google.script.run` must not end in `_`.
 - Web-app access defaults to `MYSELF`.
 - Tests:
-  - `engine.test.cjs` (37)
-  - `server.test.cjs` (13, including save/reload persistence and v1→v2 migration)
+  - `engine.test.cjs` (46, incl. the relief-factor Delivery Room cases)
+  - `server.test.cjs` (14, including save/reload persistence, v1→v2 migration and legacy settings)
   - `gas-compat.test.cjs` (12)
-  - `ui-smoke.cjs` (71 browser checks)
+  - `ui-smoke.cjs` (96 browser checks)

@@ -172,7 +172,7 @@ function sanitizeState_(input, existingUnits) {
   NwcCalc.SETTINGS_FIELDS.forEach(function (f) {
     var v = input.settings ? input.settings[f.key] : undefined;
     if (v === undefined) v = f.def;
-    settings[f.key] = f.type === 'number' ? sNum_(v) : sStr_(v, 40);
+    settings[f.key] = f.type === 'number' ? sNum_(v) : f.type === 'bool' ? sBool_(v) : sStr_(v, 40);
   });
 
   var seen = {};
@@ -227,10 +227,11 @@ function writeResultsSheet_(result) {
   var head = [
     ['Nursing Workforce Calculator — results (derived; do not edit). Gap = required − credited: positive = shortage, negative = surplus.', '', ''],
     ['Reporting month', result.month ? result.month.ym : '', result.month ? result.month.days + ' days' : ''],
-    ['FTE method / basis', h.mode === 'DEDUCT' ? 'Deduct unavailable hours' : 'Relief uplift',
-      'Hours per FTE: ' + (h.hoursPerFTE ? h.hoursPerFTE.toFixed(2) : 'n/a') + ' · requirement basis: ' + (sm.basis === 'WHOLE_SHIFT' ? 'whole-shift staffing' : 'average workload')],
+    ['Leave & absence coverage', h.applyReliefFactor ? 'Applied × ' + h.reliefFactor : 'Not applied',
+      'Available hours per FTE: ' + (h.hoursPerFTE ? h.hoursPerFTE.toFixed(2) : 'n/a') + ' · productive: ' + (h.productiveHoursPerFTE ? h.productiveHoursPerFTE.toFixed(2) : 'n/a') +
+      ' · requirement basis: ' + (sm.basis === 'WHOLE_SHIFT' ? 'whole-shift staffing' : 'average workload')],
     ['Totals', sm.totalsLabel, sm.provisionalReasons.join('; ').slice(0, 1000)],
-    ['Required FTE (completed units)', r2(sm.requiredFTE), 'Establishment (rounded per unit): ' + sm.establishment],
+    ['Required FTE (completed units)', r2(sm.requiredFTE), 'Base ' + r2(sm.baseRequiredFTE) + ' + coverage ' + r2(sm.coverageAdditionFTE) + ' · establishment (rounded per unit): ' + sm.establishment],
     ['Current RN FTE (same units)', r2(sm.currentRNFTE), 'All units: ' + r2(sm.currentRNFTEAllUnits) + ' FTE, ' + sm.currentRNHC + ' headcount'],
     ['CNC credited FTE', r2(sm.cncCreditedFTE), 'Headcount ' + sm.cncHC + ', FTE available ' + r2(sm.cncAvailableFTE) + ', allocated ' + r2(sm.cncAllocatedFTE)],
     ['PCA/PCT credited FTE', r2(sm.pcaCreditedFTE), 'Headcount ' + sm.pcaHC + ', FTE available ' + r2(sm.pcaAvailableFTE) + ', allocated ' + r2(sm.pcaAllocatedFTE)],
@@ -242,12 +243,12 @@ function writeResultsSheet_(result) {
     ['Generated', new Date(), '']
   ];
   sh.getRange(1, 1, head.length, 3).setValues(head);
-  var cols = ['Unit ID', 'Unit', 'Type', 'Method', 'Status', 'Counted in totals', 'Required FTE', 'Average-workload FTE', 'Whole-shift FTE',
+  var cols = ['Unit ID', 'Unit', 'Type', 'Method', 'Status', 'Counted in totals', 'Base required FTE', 'Coverage addition FTE', 'Required FTE', 'Average-workload FTE', 'Whole-shift FTE',
     'Current RN FTE', 'CNC FTE', 'PCA/PCT FTE', 'Transfer in', 'Transfer out', 'RN gap (+short)', 'Remaining gap (+short)',
     'Required hours', 'Available qualified hours', 'Uncovered hours', 'OT eligible HC', 'Feasible OT hours', 'Estimated OT cost',
     'Remaining recruitment FTE', 'Missing data', 'Notes'];
   var rows = result.units.map(function (r) {
-    return [r.id, r.name, r.unitType, r.methodLabel, r.status, r.counted ? 'Yes' : 'No', r2(r.requiredFTE), r2(r.avgFTE), r2(r.shiftFTE),
+    return [r.id, r.name, r.unitType, r.methodLabel, r.status, r.counted ? 'Yes' : 'No', r2(r.baseRequiredFTE), r2(r.coverageAdditionFTE), r2(r.requiredFTE), r2(r.avgFTE), r2(r.shiftFTE),
       r2(r.currentFTE), r2(r.cncFTE), r2(r.pcaFTE), r2(r.transferIn), r2(r.transferOut), r2(r.rnGap), r2(r.adjustedGap),
       r0(r.requiredHours), r0(r.availableQualifiedHours), r0(r.uncoveredHours), r.otEligibleHC === null ? 'Not set' : r.otEligibleHC,
       r0(r.feasibleOT), r.otCost === 'RATE' ? 'Rate Required' : r0(r.otCost), r2(r.remainingRecruitFTE),

@@ -105,6 +105,11 @@ Saved inputs are not overwritten. The `Audit_Log` records what was migrated.
   - Support staff: headcount, FTE, default %s, PCA cap, approval flags.
   - Costs, the allocation table, archived units and data quality.
 
+**Leave & Absence Coverage (optional):** off by default, so Final Required FTE = Base Required FTE (required hours ÷
+available monthly hours per FTE). Tick **Include Leave & Absence Coverage** (unit panel or Settings, both views) to
+multiply by the Coverage / Relief Factor (default 1.17, 1.00–1.50). The unit Result card shows Base, Coverage,
+Final, Available, Gap and Overtime Needed.
+
 **Gap sign:** required − credited. Positive = **▲ Shortage** (red); negative = **▼ Surplus** (green).
 
 **Two results:**
@@ -120,8 +125,8 @@ archive and delete actions all ask for confirmation.
 ## Tests
 
 ```bash
-npm run test:gas   # 62 engine, server and Apps Script-compatibility tests (node:test); also run by `npm test`
-npm run test:ui    # browser end-to-end test (71 checks; needs Playwright/Chromium)
+npm run test:gas   # 72 engine, server and Apps Script-compatibility tests (node:test); also run by `npm test`
+npm run test:ui    # browser end-to-end test (96 checks; needs Playwright/Chromium)
 ```
 
 See `PROJECT_MEMORY.md` for calculation definitions and design decisions.

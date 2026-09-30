@@ -122,7 +122,7 @@
       var key = el.getAttribute('data-f').split('.').pop(), id = el.getAttribute('data-u');
       el.classList.toggle('bad', errs.some(function (x) { return x.unitId === id && x.field === key && x.scope !== 'Contributions'; }));
     });
-    Array.prototype.forEach.call(document.querySelectorAll('#page-settings [data-s]'), function (el) {
+    Array.prototype.forEach.call(document.querySelectorAll('#page-' + App.page + ' [data-s]'), function (el) {
       var k = el.getAttribute('data-s');
       el.classList.toggle('bad', errs.some(function (x) { return x.scope === 'Settings' && x.field === k; }));
     });
@@ -159,6 +159,21 @@
     if (f.type === 'bool') return '<label class="chk">' + uChk(u, path, false) + esc(f.label) + '</label>';
     return '<label>' + esc(f.label) + uIn(u, path) + (f.help ? '<span class="help">' + esc(f.help) + '</span>' : '') + '</label>';
   }
+  /** Leave & absence coverage — one global setting, shown wherever FTE is explained. */
+  function coverageControl(note) {
+    var hm = App.result.hours, st = App.state.settings;
+    var fv = C.isBlank(st.reliefFactor) || st.reliefFactor === undefined ? hm.reliefFactor : st.reliefFactor;
+    return '<div class="coverage"><label class="chk"><input type="checkbox" data-s="applyReliefFactor" data-t="bool" data-rr="1"' + (hm.applyReliefFactor ? ' checked' : '') + '> Include Leave &amp; Absence Coverage</label>' +
+      (hm.applyReliefFactor
+        ? '<label class="cf">Coverage / Relief Factor<input type="number" min="1" max="1.5" step="0.01" inputmode="decimal" data-s="reliefFactor" value="' + esc(fv) + '"></label>'
+        : '') +
+      '<span class="help">Optional coverage for annual leave, days off, sickness and unplanned absence.' + (note ? ' ' + note : '') + '</span></div>';
+  }
+  function coverageText(r) {
+    if (r.isOverride) return 'Not applied (manual override is the final FTE)';
+    return r.reliefFactorApplied ? 'Factor ' + r.reliefFactorApplied + ' · +' + n2(r.coverageAdditionFTE) + ' FTE' : 'Not applied';
+  }
+
   function methodOptions(u) { return C.allowedMethods(u).map(function (m) { return [m, C.METHODS[m].label]; }); }
   function typeOptions(section) { return Object.keys(C.UNIT_TYPES).filter(function (k) { return C.UNIT_TYPES[k].section === section; }).map(function (k) { return [k, C.UNIT_TYPES[k].label]; }); }
 
@@ -226,7 +241,7 @@
     var r = res(id); if (!r) return '';
     if (r.requiredFTE === null) return DR;
     if (simple()) return '<b>' + n2(r.requiredFTE) + '</b>';
-    var basis = r.isOverride ? 'manual override' : r.basis === 'WHOLE_SHIFT' ? 'whole-shift basis' : 'average workload';
+    var basis = (r.isOverride ? 'manual override' : r.basis === 'WHOLE_SHIFT' ? 'whole-shift basis' : 'average workload') + (r.reliefFactorApplied ? ' × ' + r.reliefFactorApplied : '');
     return '<b>' + n2(r.requiredFTE) + '</b><span class="sub">' + basis + ' · est. ' + r.establishment + '</span>';
   }
 
@@ -293,7 +308,7 @@
       h += '<div class="card"><h3>Minimum coverage</h3><p class="note">ER minimum RN is set per time period in the workload tables.</p><div class="form"><label class="chk">' + uChk(u, 'isOpen', true) + 'Unit open</label></div></div>';
     }
     // Requirement basis
-    h += '<div class="card"><h3>Required FTE basis</h3><div data-region="basis" data-arg="' + esc(u.id) + '"></div>' +
+    h += '<div class="card"><h3>Required FTE basis</h3><div data-region="basis" data-arg="' + esc(u.id) + '"></div>' + coverageControl('Applies to all units.') +
       '<div class="form" style="margin-top:10px"><label>Manual required-FTE override' + uIn(u, 'manualOverrideFTE') + '<span class="help">Only when reliable workload data is unavailable.</span></label>' +
       '<label>Override reason (mandatory)' + uTxt(u, 'manualOverrideReason') + '</label></div></div>';
     // Staffing & overtime
@@ -328,7 +343,8 @@
     };
     return '<div class="basis">' + opt('AVERAGE', 'Average workload', r.avgFTE, 'fractional average RN coverage') +
       opt('WHOLE_SHIFT', 'Whole-shift staffing', r.shiftFTE, (r.shiftRN !== null ? r.shiftRN + ' whole RN per shift' : 'whole nurses each period') + (r.shiftCensusAssumed ? ' (census assumed)' : '')) + '</div>' +
-      (r.isOverride ? '<p class="note"><span class="tag">Manual override drives requirement: ' + n2(r.requiredFTE) + ' FTE</span></p>' : '<p class="note">Change the basis for all units in Settings → Hours per FTE.</p>');
+      (r.isOverride ? '<p class="note"><span class="tag">Manual override drives requirement: ' + n2(r.requiredFTE) + ' FTE</span></p>'
+        : '<p class="note">Values above are Base FTE. Final required FTE = ' + n2(r.baseRequiredFTE) + (r.reliefFactorApplied ? ' × ' + r.reliefFactorApplied + ' = <b>' + n2(r.requiredFTE) + '</b>' : ' (coverage not applied)') + '. Change the basis for all units in Settings.</p>');
   }
 
   function calcRegion(id) {
@@ -338,7 +354,9 @@
     h += '<ul class="lines">' + r.lines.map(function (l) { return '<li>' + esc(l) + '</li>'; }).join('') + '</ul>';
     if (r.requiredFTE !== null) {
       var hpf = App.result.hours.hoursPerFTE;
-      h += '<ul class="lines"><li>Required FTE = ' + f0(r.coverageHours) + ' h ÷ ' + hpf.toFixed(2) + ' h per FTE = <b>' + n2(r.requiredFTE) + '</b> (establishment ' + r.establishment + ')</li>' +
+      h += '<ul class="lines"><li>Base required FTE = ' + (r.isOverride ? 'manual override ' + n2(r.baseRequiredFTE) : f0(r.coverageHours) + ' h ÷ ' + hpf.toFixed(2) + ' available h per FTE = ' + n2(r.baseRequiredFTE)) + '</li>' +
+        '<li>Coverage adjustment: ' + esc(coverageText(r)) + '</li>' +
+        '<li>Final required FTE = <b>' + n2(r.requiredFTE) + '</b> (establishment ' + r.establishment + ')</li>' +
         '<li>RN coverage gap = required ' + n2(r.requiredFTE) + ' − (RN ' + n2(r.currentFTE) + ' + CNC ' + n2(r.cncFTE) + ' + transfers in ' + n2(r.transferIn) + ' − out ' + n2(r.transferOut) + ') = ' + gap(r.rnGap) + '</li>' +
         '<li>Remaining (adjusted) gap = RN gap − PCA/PCT ' + n2(r.pcaFTE) + ' = ' + gap(r.adjustedGap) + (App.result.summary.scenarioApproved ? '' : ' <span class="tag">Planning scenario</span>') + '</li>' +
         '<li>Estimated overtime required: uncovered ' + f0(r.uncoveredHours) + ' h; capacity ' + (r.otCapacity === null ? 'eligibility not set' : f0(r.otCapacity) + ' h (' + r.otEligibleHC + ' RN × max, ' + esc(r.otEligibleSource) + ')') +
@@ -432,7 +450,7 @@
     var scen = sm.scenarioApproved ? '<span class="tag teal">Assumptions approved</span>' : '<span class="tag">Planning scenario</span>';
     var basis = sm.basis === 'WHOLE_SHIFT' ? 'whole-shift staffing basis' : 'average-workload basis';
     return '<div class="kpis">' +
-      kpi('Required FTE', n2(sm.requiredFTE), sm.completedUnits + ' of ' + sm.unitsCounted + ' units · ' + basis + ' · establishment ' + sm.establishment, 'accent', prov) +
+      kpi('Required FTE', n2(sm.requiredFTE), sm.completedUnits + ' of ' + sm.unitsCounted + ' units · ' + basis + ' · ' + (sm.applyReliefFactor ? 'incl. leave coverage × ' + sm.reliefFactor + ' (+' + n2(sm.coverageAdditionFTE) + ')' : 'leave coverage not applied') + ' · establishment ' + sm.establishment, 'accent', prov) +
       kpi('Current RN FTE', n2(sm.currentRNFTE), 'same ' + sm.completedUnits + ' units · all units ' + n2(sm.currentRNFTEAllUnits) + ' FTE / ' + sm.currentRNHC + ' headcount', 'accent', prov) +
       kpi('CNC contribution', n2(sm.cncCreditedFTE) + '<small>FTE</small>', 'credited qualified direct care · headcount ' + sm.cncHC + ' · ' + n2(sm.cncAvailableFTE) + ' FTE available · ' + n2(sm.cncAllocatedFTE) + ' allocated', 'accent') +
       kpi('PCA/PCT contribution', n2(sm.pcaCreditedFTE) + '<small>FTE</small>', 'credited approved support tasks · headcount ' + sm.pcaHC + ' · ' + n2(sm.pcaAvailableFTE) + ' FTE available · ' + n2(sm.pcaAllocatedFTE) + ' allocated', 'accent', scen) +
@@ -453,7 +471,7 @@
       kpi('Uncovered hours', f0(sm.uncoveredHours), 'required − available qualified coverage hours (completed units)', sm.uncoveredHours > 0 ? 'short' : '') +
       kpi('Feasible overtime hours', sm.feasibleOTHours === null ? DR : f0(sm.feasibleOTHours), miss || 'eligible RN × max ' + esc(App.state.settings.otMaxHoursPerRN) + ' h (configurable assumption)', sm.feasibleOTHours === null ? 'dr' : '') +
       kpi('Estimated OT cost', sm.otCost === null ? DR : money(sm.otCost, cur), sm.otCost === 'RATE' ? 'enter overtime cost per hour in Settings' : 'feasible hours × hourly rate', sm.otCost === null || sm.otCost === 'RATE' ? 'dr' : '') +
-      kpi('Remaining recruitment FTE', sm.remainingRecruitFTE === null ? DR : n2(sm.remainingRecruitFTE), sm.remainingUncoveredHours === null ? miss : f0(sm.remainingUncoveredHours) + ' h left after feasible OT ÷ ' + App.result.hours.hoursPerFTE.toFixed(2) + ' h/FTE', sm.remainingRecruitFTE > 0.005 ? 'short' : '') +
+      kpi('Remaining recruitment FTE', sm.remainingRecruitFTE === null ? DR : n2(sm.remainingRecruitFTE), sm.remainingUncoveredHours === null ? miss : f0(sm.remainingUncoveredHours) + ' h left after feasible OT ÷ ' + App.result.hours.productiveHoursPerFTE.toFixed(2) + ' productive h/FTE', sm.remainingRecruitFTE > 0.005 ? 'short' : '') +
       '</div>';
   }
 
@@ -537,19 +555,14 @@
   function renderSettings() {
     if (simple()) return renderSettingsSimple();
     var s = App.state.settings, groups = {};
-    C.SETTINGS_FIELDS.forEach(function (f) { (groups[f.group] = groups[f.group] || []).push(f); });
+    C.SETTINGS_FIELDS.forEach(function (f) { if (!f.legacy) (groups[f.group] = groups[f.group] || []).push(f); });
     var h = '<div class="banner info" style="margin:0 0 16px">All values are planning assumptions requiring local approval. Imported ratios are not mandatory clinical standards.</div><div class="settings-grid">';
     Object.keys(groups).forEach(function (g) {
       h += '<div class="card"><h3>' + esc(g) + '</h3><div class="form">';
       groups[g].forEach(function (f) {
         var v = s[f.key] === undefined ? '' : s[f.key];
-        if (f.key === 'fteMode') {
-          h += '<label style="grid-column:1/-1">FTE method (only one can be active)<span class="days">' +
-            '<label class="chk"><input type="radio" name="fteMode" data-s="fteMode" value="DEDUCT"' + (v === 'DEDUCT' ? ' checked' : '') + '> Deduct unavailable hours</label>' +
-            '<label class="chk"><input type="radio" name="fteMode" data-s="fteMode" value="UPLIFT"' + (v === 'UPLIFT' ? ' checked' : '') + '> Relief uplift</label></span>' +
-            '<span class="help">Deduct: FTE = hours ÷ (scheduled − leave − training − other). Uplift: FTE = hours ÷ scheduled × (1 + uplift). Never both — that would count absence twice.</span></label>';
-          return;
-        }
+        if (f.key === 'applyReliefFactor') { h += '<div style="grid-column:1/-1">' + coverageControl() + '</div>'; return; }
+        if (f.key === 'reliefFactor') return;
         if (f.type === 'enum') {
           var labels = { AVERAGE: 'Average workload', WHOLE_SHIFT: 'Whole-shift staffing', NO: 'No', YES: 'Yes' };
           h += '<label' + (f.key.indexOf('pca') === 0 || f.key === 'requirementBasis' ? ' style="grid-column:1/-1"' : '') + '>' + esc(f.label) + '<select data-s="' + f.key + '" data-rr="1">' + optionTags(f.options.map(function (o) { return [o, labels[o] || o]; }), v) + '</select>' + (f.help ? '<span class="help">' + esc(f.help) + '</span>' : '') + '</label>';
@@ -560,7 +573,7 @@
           (f.help ? '<span class="help">' + esc(f.help) + '</span>' : '') + '</label>';
       });
       h += '</div>';
-      if (g === 'Hours per FTE') h += '<div data-region="hours" style="margin-top:10px"></div>';
+      if (g === 'Leave & absence coverage') h += '<div data-region="hours" style="margin-top:10px"></div>';
       if (g === 'Support staff & contributions') h += '<div data-region="pools" style="margin-top:10px"></div>';
       h += '</div>';
     });
@@ -578,10 +591,12 @@
   function hoursRegion() {
     var hm = App.result.hours, mi = App.result.month;
     if (!mi) return '<div class="banner err" style="margin:0">Enter a valid reporting month.</div>';
-    return '<div class="explain">' + esc(mi.ym) + ': ' + mi.days + ' days, ' + mi.fridays + ' Fridays. Scheduled hours per FTE <b>' + n2(hm.scheduledHours) + '</b> (' + esc(hm.scheduledSource) + '). ' +
-      (hm.mode === 'DEDUCT'
-        ? 'Unavailable ' + n2(hm.unavailableHours) + ' h → available regular hours per FTE <b>' + n2(hm.hoursPerFTE) + '</b> (≈ ' + f1(hm.equivalentUpliftPct) + '% uplift — do not add an uplift as well).'
-        : 'Relief uplift ' + f1(hm.equivalentUpliftPct) + '% → effective hours per FTE <b>' + n2(hm.hoursPerFTE) + '</b>. Leave fields ignored.') + '</div>';
+    return '<div class="explain">' + esc(mi.ym) + ': ' + mi.days + ' days, ' + mi.fridays + ' Fridays. Available monthly hours per FTE <b>' + f2(hm.hoursPerFTE) + '</b> (' + esc(hm.scheduledSource) + '). ' +
+      'Base Required FTE = required hours ÷ ' + f2(hm.hoursPerFTE) + '. ' +
+      (hm.applyReliefFactor
+        ? 'Leave &amp; absence coverage <b>applied × ' + esc(hm.reliefFactor) + '</b>: Final = Base × ' + esc(hm.reliefFactor) + '; each FTE covers ' + f2(hm.productiveHoursPerFTE) + ' productive hours for overtime.'
+        : 'Leave &amp; absence coverage <b>not applied</b>: Final = Base.') +
+      (hm.suggestedFactor ? ' Your reference leave/training/other hours (' + n2(hm.unavailableHours) + ' h) correspond to a factor of about ' + hm.suggestedFactor.toFixed(2) + '.' : '') + '</div>';
   }
 
   function poolsRegion() {
@@ -631,7 +646,7 @@
     var sm = App.result.summary;
     var avail = sm.requiredFTE - (sm.finalShortageFTE - sm.finalSurplusFTE);
     return '<div class="kpis four">' +
-      kpi('Required', n2(sm.requiredFTE) + '<small>FTE</small>', sm.completedUnits + ' calculated units') +
+      kpi('Required', n2(sm.requiredFTE) + '<small>FTE</small>', sm.completedUnits + ' calculated units · ' + (sm.applyReliefFactor ? 'incl. leave coverage × ' + sm.reliefFactor : 'leave coverage not included')) +
       kpi('Available', n2(avail) + '<small>FTE</small>', 'current nurses + CNC/PCA credit') +
       kpi('Shortage', n2(sm.finalShortageFTE) + '<small>FTE</small>', sm.remainingRecruitFTE === null ? 'before overtime' : 'after overtime: ' + n2(sm.remainingRecruitFTE) + ' FTE to recruit', sm.finalShortageFTE > 0.005 ? 'short' : 'surplus') +
       kpi('Staff (headcount)', sm.totalHC.toLocaleString('en-US'), 'RN ' + sm.currentRNHC + ' · CNC ' + sm.cncHC + ' · PCA/PCT ' + sm.pcaHC) +
@@ -710,7 +725,8 @@
       '<label>Nurses now (RN headcount)' + uIn(u, 'currentRNHeadcount') + '</label>' +
       '<label>' + (u.section === 'INPATIENT' ? 'Minimum nurses per shift' : 'Minimum nurses while open') + uIn(u, 'minRNPerShift') + '</label>';
     if (u.method !== 'ER') h += '<label>Open hours per day' + uIn(u, 'schedule.weekdayHours') + '</label><label>Friday hours (0 = closed)' + uIn(u, 'schedule.fridayHours') + '</label>';
-    h += '<label class="chk">' + uChk(u, 'isOpen', true) + 'Unit is open</label></div></div>' +
+    h += '<label class="chk">' + uChk(u, 'isOpen', true) + 'Unit is open</label></div>' +
+      '<hr class="sep"><h3>Leave &amp; Absence Coverage</h3>' + coverageControl('Applies to all units.') + '</div>' +
       '<div class="card"><h3>Result</h3><div data-region="sresult" data-arg="' + esc(u.id) + '"></div>' +
       '<p class="note">CNC/PCA allocations, overrides, schedule days and archiving are in <button type="button" class="link" data-act="mode" data-v="full">Full view</button>.</p></div></div>';
     return h;
@@ -720,24 +736,31 @@
     var r = res(id); if (!r) return '';
     if (r.status === S.DATA) return '<div class="banner warn" style="margin:0">Enter: ' + esc(r.missing.join(', ')) + '</div>';
     if (r.status === S.CLOSED) return '<p class="note">Closed — no nurses required.</p>';
-    return '<ul class="result"><li><span>Required</span><b>' + n2(r.requiredFTE) + ' FTE</b></li>' +
-      '<li><span>Available</span><b>' + n2(availableFTE(r)) + ' FTE</b></li>' +
-      '<li><span>Gap</span><b>' + gap(r.adjustedGap) + '</b></li>' +
-      '<li><span>Overtime needed</span><b>' + (r.uncoveredHours > 0 ? f0(r.uncoveredHours) + ' h' : 'none') + '</b></li></ul>';
+    var row = function (k, v, cls) { return '<li' + (cls ? ' class="' + cls + '"' : '') + '><span>' + k + '</span><b>' + v + '</b></li>'; };
+    return '<ul class="result">' +
+      row('Base Required FTE', n2(r.baseRequiredFTE)) +
+      (r.reliefFactorApplied && !r.isOverride
+        ? row('Coverage Factor', esc(r.reliefFactorApplied)) + row('Coverage Addition', '+' + n2(r.coverageAdditionFTE) + ' FTE')
+        : row('Coverage Adjustment', r.isOverride ? 'Not applied (override)' : 'Not Applied')) +
+      row('Final Required FTE', n2(r.requiredFTE), 'final') +
+      row('Available FTE', n2(r.availableFTE)) +
+      row('Gap', gap(r.adjustedGap)) +
+      row('Overtime Needed', r.uncoveredHours > 0 ? f0(r.uncoveredHours) + ' h' : 'None') + '</ul>';
   }
 
-  var BASIC_SETTINGS = ['reportingMonth', 'contractedWeeklyHours', 'leaveHours', 'trainingHours', 'otherUnavailableHours',
+  var BASIC_SETTINGS = ['reportingMonth', 'contractedWeeklyHours', 'scheduledHoursOverride', 'applyReliefFactor',
     'otMaxHoursPerRN', 'otEligiblePct', 'costOTPerHour', 'cncHeadcount', 'pcaHeadcount'];
   function renderSettingsSimple() {
     var s = App.state.settings;
     var h = '<div class="card" style="max-width:860px"><h3>Basic settings <span class="hint">planning assumptions — change to match your hospital</span></h3><div class="form">';
     BASIC_SETTINGS.forEach(function (k) {
       var f = C.SETTINGS_FIELDS.filter(function (x) { return x.key === k; })[0], v = s[k] === undefined ? '' : s[k];
+      if (k === 'applyReliefFactor') { h += '<div style="grid-column:1/-1">' + coverageControl() + '</div>'; return; }
       h += '<label>' + esc(f.label) + '<input type="' + (f.type === 'month' ? 'month' : 'text') + '"' + (f.type === 'number' ? ' inputmode="decimal"' : '') +
         ' data-s="' + k + '" value="' + esc(v) + '"' + (f.type === 'month' ? ' data-rr="1"' : '') + '></label>';
     });
     h += '</div><div data-region="hours" style="margin-top:12px"></div>' +
-      '<p class="note">More settings (FTE method, CNC/PCA contribution %, allocations, costs, archived units) are in <button type="button" class="link" data-act="mode" data-v="full">Full view</button>.</p></div>';
+      '<p class="note">More settings (requirement basis, reference leave hours, CNC/PCA contribution %, allocations, costs, archived units) are in <button type="button" class="link" data-act="mode" data-v="full">Full view</button>.</p></div>';
     return h;
   }
 

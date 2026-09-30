@@ -224,3 +224,35 @@ test('v1 → v2 migration: unit types added, CNC hours converted, saved inputs u
   assert.equal(c.getAppData().state.contributions.length, 2, 'migration runs once');
   assert.ok(leg.data.length === 3, 'legacy sheet left untouched');
 });
+
+test('relief settings: legacy sheet without the new rows loads with defaults; checkbox + factor save and reload', () => {
+  const c = createContext();
+  c.initializeSystem();
+  // Simulate a v2 Settings sheet: remove the two new keys.
+  const st = c.__ss.sheets.Settings;
+  st.data = st.data.filter(r => r[0] !== 'applyReliefFactor' && r[0] !== 'reliefFactor');
+  let d = J(c.getAppData());
+  assert.equal(d.state.settings.applyReliefFactor, false);
+  assert.equal(d.state.settings.reliefFactor, 1.17);
+  // initializeSystem adds only the missing keys, without touching others.
+  assert.match(c.initializeSystem(), /Added 2 default setting/);
+  d = J(c.getAppData());
+  d.state.settings.applyReliefFactor = true;
+  d.state.settings.reliefFactor = '1.12';
+  assert.equal(c.saveAppData({ state: d.state, revision: d.revision }).ok, true);
+  const back = c.getAppData().state.settings;
+  assert.equal(back.applyReliefFactor, true);
+  assert.equal(back.reliefFactor, 1.12);
+  const r = c.NwcCalc.calculate(c.getAppData().state);
+  assert.equal(r.hours.effectiveFactor, 1.12);
+  // Stored as TRUE in the sheet; a text "TRUE" (Sheets '@' format) reads back as true.
+  const row = st.data.find(x => x[0] === 'applyReliefFactor');
+  row[1] = 'TRUE';
+  assert.equal(c.getAppData().state.settings.applyReliefFactor, true);
+  row[1] = 'FALSE';
+  assert.equal(c.getAppData().state.settings.applyReliefFactor, false);
+  // Out-of-range factor is rejected by server validation.
+  d = J(c.getAppData());
+  d.state.settings.reliefFactor = 2;
+  assert.equal(c.saveAppData({ state: d.state, revision: d.revision }).ok, false);
+});
