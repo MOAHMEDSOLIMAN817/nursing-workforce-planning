@@ -218,8 +218,9 @@ test('v1 → v3 migration: unit types, CNC hours converted, Other & OPD manual, 
   assert.match(msg, /Migrated 2 CNC row/);
   const st = c.getAppData().state;
   assert.equal(st.units.find(u => u.id === 'U-OPD-SURG').unitType, 'OPD');
-  assert.equal(st.units.find(u => u.id === 'U-OPD-SURG').method, 'MANUAL', 'v3 step ran after v2');
-  assert.match(msg, /Switched 10 Other & OPD unit/);
+  assert.equal(st.units.find(u => u.id === 'U-OPD-SURG').method, 'CLINIC', 'OPD keeps the clinic formula');
+  assert.equal(st.units.find(u => u.id === 'U-OR').method, 'MANUAL', 'v3 step ran after v2');
+  assert.match(msg, /Switched 8 Other & OPD unit/);
   assert.equal(st.units.find(u => u.id === 'U-PICU').unitType, 'INPATIENT');
   const a = st.contributions.find(x => x.id === 'C-1');
   assert.equal(a.category, 'CNC');
@@ -263,7 +264,7 @@ test('relief settings: legacy sheet without the new rows loads with defaults; ch
   assert.equal(c.saveAppData({ state: d.state, revision: d.revision }).ok, false);
 });
 
-test('v3 migration on an existing v2 sheet: Other & OPD switch to manual with their current values; runs once', () => {
+test('v3 migration on an existing v2 sheet: Other units switch to manual with their current values; OPD keeps formula; runs once', () => {
   const c = createContext();
   c.initializeSystem();
   // Rebuild a v2 sheet: original methods, schema 2.
@@ -273,11 +274,37 @@ test('v3 migration on an existing v2 sheet: Other & OPD switch to manual with th
   ss.sheets._Meta.data.find(r => r[0] === 'schema_version')[1] = '2';
   const v2 = c.NwcCalc.calculate({ settings: c.readSettings_(), units: c.readUnits_(), transfers: [], contributions: [] });
   const msg = c.initializeSystem();
-  assert.match(msg, /Switched 10 Other & OPD unit/);
+  assert.match(msg, /Switched 8 Other & OPD unit/);
   const st = c.getAppData().state;
-  const opd = st.units.find(u => u.id === 'U-OPD-MED');
-  assert.equal(opd.method, 'MANUAL');
-  assert.equal(opd.params.MANUAL.requiredFTE, Math.round(v2.units.find(u => u.id === 'U-OPD-MED').baseRequiredFTE * 100) / 100);
-  assert.equal(opd.params.CLINIC.clinics, 30, 'old inputs kept for Full view');
+  assert.equal(st.units.find(u => u.id === 'U-OPD-MED').method, 'CLINIC');
+  const or = st.units.find(u => u.id === 'U-OR');
+  assert.equal(or.method, 'MANUAL');
+  assert.equal(or.params.OR.rooms, 4, 'old inputs kept for Full view');
+  assert.equal(or.params.MANUAL.capacity, 4, 'beds / rooms filled from the workbook');
+  assert.equal(c.NwcCalc.calculate(st).units.find(u => u.id === 'U-OPD-MED').requiredFTE, v2.units.find(u => u.id === 'U-OPD-MED').requiredFTE);
+  assert.match(c.initializeSystem(), /nothing changed/);
+});
+
+test('v4 migration on a v3 sheet: OPD clinic formula restored, beds / clinics filled only where blank; runs once', () => {
+  const c = createContext();
+  c.initializeSystem();
+  // Rebuild a v3 sheet: OPD units manual, no capacity values; one user-entered capacity to preserve.
+  const d = J(c.getAppData());
+  d.state.units.forEach(u => {
+    if (u.unitType === 'OPD') { c.NwcCalc.switchMethod(u, 'MANUAL'); u.params.MANUAL.requiredFTE = 40; }
+    if (u.params.MANUAL) u.params.MANUAL.capacity = '';
+  });
+  d.state.units.find(u => u.id === 'U-ER').params.MANUAL.capacity = 30;
+  assert.equal(c.saveAppData({ state: d.state, revision: d.revision }).ok, true);
+  c.__ss.sheets._Meta.data.find(r => r[0] === 'schema_version')[1] = '3';
+  const msg = c.initializeSystem();
+  assert.match(msg, /Restored the clinic formula for 2 OPD unit/);
+  assert.match(msg, /Filled beds \/ clinics for 5 unit/);
+  const st = c.getAppData().state;
+  const surg = st.units.find(u => u.id === 'U-OPD-SURG');
+  assert.equal(surg.method, 'CLINIC');
+  assert.equal(surg.params.MANUAL.requiredFTE, 40, 'typed manual number kept (not used)');
+  assert.equal(st.units.find(u => u.id === 'U-ER').params.MANUAL.capacity, 30, 'user value not overwritten');
+  assert.equal(st.units.find(u => u.id === 'U-DR').params.MANUAL.capacity, 5);
   assert.match(c.initializeSystem(), /nothing changed/);
 });

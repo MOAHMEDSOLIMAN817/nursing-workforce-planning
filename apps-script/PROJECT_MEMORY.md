@@ -2,7 +2,7 @@
 
 This file records calculation definitions, assumptions, structure and
 decisions. Update it whenever the engine changes. The engine version is
-**3.0.0** and the data schema version is **3** (Other & OPD units default to manual Required FTE).
+**3.0.0** and the data schema version is **4** (Other units default to manual Required FTE; OPD keeps its clinic formula).
 
 ## 1. Origin and workbook corrections
 
@@ -64,7 +64,12 @@ colour: "▲ Shortage x" (red) or "▼ Surplus x" (green).
 Required FTE (Final = typed × relief factor only when Leave & Absence Coverage is on). It needs no minimum, schedule or
 method inputs; blank = Data Required (never 0); no reason is required (unlike a manual override). Internally it is
 expressed as hours (FTE × available hours per FTE) so gap, overtime and totals use the same chain as every method.
-Simple view shows Other & OPD as one table: Unit | Required FTE | Nurses now | Gap | Status (no panels or lists).
+Simple view shows Other & OPD as one table: Unit | Beds / Clinics | Required FTE | Nurses now | Gap | Status (no panels or lists).
+- **Beds / Clinics** (`capacityPath`): for MANUAL units it is `params.MANUAL.capacity`, a reference size only (it never
+  changes the typed Required FTE); for CLINIC units it is the clinic count that drives the formula.
+- **OPD – Surgical / OPD – Medical keep the clinic formula** (schema 4): Required = MAX(clinics × active % × RN per
+  clinic, minimum) × opening hours ÷ hours per FTE (× relief factor if on). Shown read-only with the formula
+  (e.g. 70 × 70% × 0.5 RN); changing the clinics recalculates. Active % and RN per clinic are edited in Full view.
 Typing a number on a unit that uses a calculated method switches it to MANUAL; its previous inputs stay in params.
 
 - Inputs are stored per method (`params[METHOD]`). `switchMethod` never
@@ -197,11 +202,14 @@ first `getAppData()` when `schema_version < 2`:
   which is serialised into the page.
 - Functions called from menus or `google.script.run` must not end in `_`.
 - Web-app access defaults to `MYSELF`.
-- **Migration v2 → v3** (`migrateToV3_` → `NwcCalc.convertOtherToManual`): each non-inpatient unit switches to MANUAL,
+- **Migration v3 → v4** (`migrateToV4_`): `restoreClinicFormula` returns OPD units with complete clinic inputs to CLINIC
+  (their typed manual number stays in params); blank `MANUAL.capacity` values are filled from `getWorkbookCapacity_()`
+  (DR-NU 5, DR 5, OR 4, ER 25, Endoscopy 5, Anesthesia 5). Never overwrites a value the user entered. Runs once.
+- **Migration v2 → v3** (`migrateToV3_` → `NwcCalc.convertOtherToManual`): each non-inpatient unit except CLINIC switches to MANUAL,
   prefilled with its current Base Required FTE rounded to 2 dp (blank if Data Required, closed or overridden). Runs once;
   new installs run it right after seeding. Old method inputs are kept, so Full view can switch a unit back.
 - Tests:
-  - `engine.test.cjs` (50, incl. relief-factor and manual cases)
-  - `server.test.cjs` (15, including save/reload persistence, v1→v3 / v2→v3 migrations and legacy settings)
+  - `engine.test.cjs` (52, incl. relief-factor, manual, beds / clinics and clinic-formula cases)
+  - `server.test.cjs` (16, including save/reload persistence, v1→v4 / v2→v3 / v3→v4 migrations and legacy settings)
   - `gas-compat.test.cjs` (12)
-  - `ui-smoke.cjs` (106 browser checks)
+  - `ui-smoke.cjs` (112 browser checks)

@@ -52,6 +52,7 @@ function initializeSystem() {
   if (ver < APP_CONFIG.SCHEMA_VERSION) {
     if (ver < 2) migrateToV2_().forEach(function (m) { report.push(m); });
     if (ver < 3) migrateToV3_().forEach(function (m) { report.push(m); });
+    if (ver < 4) migrateToV4_().forEach(function (m) { report.push(m); });
     setMeta_('schema_version', String(APP_CONFIG.SCHEMA_VERSION));
   }
 
@@ -87,6 +88,31 @@ function migrateToV3_() {
   ids.forEach(function (id) { changed[id] = true; });
   writeUnits_(state.units, 'migration', changed);
   return ['Switched ' + ids.length + ' Other & OPD unit(s) to manual Required FTE (previous inputs kept)'];
+}
+
+/**
+ * Version 3 → 4. OPD clinic-based units get their formula back (if their clinic inputs are complete)
+ * and manual units get a "Beds / clinics" reference size from the workbook where it is blank.
+ */
+function migrateToV4_() {
+  var state = { settings: readSettings_(), units: readUnits_(), transfers: [], contributions: [] };
+  var restored = NwcCalc.restoreClinicFormula(state);
+  var cap = getWorkbookCapacity_(), filled = [];
+  state.units.forEach(function (u) {
+    if (u.method !== 'MANUAL') return;
+    u.params.MANUAL = u.params.MANUAL || {};
+    if ((u.params.MANUAL.capacity === undefined || u.params.MANUAL.capacity === '') && cap[u.id] !== undefined) {
+      u.params.MANUAL.capacity = cap[u.id]; filled.push(u.id);
+    }
+  });
+  var changed = {};
+  restored.concat(filled).forEach(function (id) { changed[id] = true; });
+  if (!restored.length && !filled.length) return [];
+  writeUnits_(state.units, 'migration', changed);
+  var out = [];
+  if (restored.length) out.push('Restored the clinic formula for ' + restored.length + ' OPD unit(s)');
+  if (filled.length) out.push('Filled beds / clinics for ' + filled.length + ' unit(s) from the workbook');
+  return out;
 }
 
 function migrateToV2_() {

@@ -605,19 +605,50 @@ test('manual: leave & absence coverage multiplies the typed number only when swi
   close(on.uncoveredHours, 11.7 * HPF / 1.17, 1e-6);   // = 10 FTE of actual care hours
 });
 
-test('convertOtherToManual: keeps current results, keeps old inputs, blanks unknowns, skips inpatient', () => {
+test('convertOtherToManual: OPD keeps the clinic formula; others manual with old inputs kept; unknowns blank', () => {
   const st = state(E.getSeedUnits_(), { settings: baseSettings({ reportingMonth: '2026-09' }) });
   const before = C.calculate(st);
   const ids = C.convertOtherToManual(st);
-  assert.equal(ids.length, 10);
+  assert.equal(ids.length, 8);
   const after = C.calculate(st);
-  const opd = st.units.find(u => u.id === 'U-OPD-SURG');
-  assert.equal(opd.method, 'MANUAL');
-  assert.equal(opd.params.CLINIC.clinics, 70, 'previous inputs kept');
-  assert.equal(opd.params.MANUAL.requiredFTE, Math.round(before.units.find(u => u.id === 'U-OPD-SURG').baseRequiredFTE * 100) / 100);
-  assert.equal(st.units.find(u => u.id === 'U-OR').params.MANUAL.requiredFTE, '', 'Data Required stays Data Required');
+  for (const id of ['U-OPD-SURG', 'U-OPD-MED']) {
+    assert.equal(st.units.find(u => u.id === id).method, 'CLINIC', id + ' keeps its formula');
+    assert.equal(after.units.find(u => u.id === id).requiredFTE, before.units.find(u => u.id === id).requiredFTE);
+  }
+  const or = st.units.find(u => u.id === 'U-OR');
+  assert.equal(or.method, 'MANUAL');
+  assert.equal(or.params.OR.rooms, 4, 'previous inputs kept');
+  assert.equal(or.params.MANUAL.requiredFTE, '', 'Data Required stays Data Required');
+  assert.equal(or.params.MANUAL.capacity, 4, 'workbook beds / rooms carried as reference');
   assert.equal(after.summary.unitsDataRequired, before.summary.unitsDataRequired);
   assert.ok(st.units.filter(u => u.section === 'INPATIENT').every(u => u.method === 'RATIO'));
-  assert.ok(Math.abs(after.summary.requiredFTE - before.summary.requiredFTE) < 0.02, 'totals unchanged apart from 2-dp rounding');
   assert.equal(C.convertOtherToManual(st).length, 0, 'idempotent');
+});
+
+test('beds / clinics: reference only for manual units; drives the OPD clinic formula', () => {
+  const m = manualUnit('M', 6, 5);
+  const a = unitRes(C.calculate(state([m])), 'M').requiredFTE;
+  m.params.MANUAL.capacity = 40;
+  assert.equal(unitRes(C.calculate(state([m])), 'M').requiredFTE, a, 'capacity does not change a typed requirement');
+  assert.equal(C.capacityPath(m), 'params.MANUAL.capacity');
+  const opd = C.newUnit('O', 'OPD', 'OTHER', 'CLINIC', 'OPD'); opd.minRNPerShift = 1;
+  opd.schedule = { weekdayHours: 12, openDays: 'Sat,Sun,Mon,Tue,Wed,Thu', fridayHours: 0, holidayHours: 0 };
+  opd.params.CLINIC = { clinics: 70, utilisationPct: 70, rnPerClinic: 0.5 };
+  assert.equal(C.capacityPath(opd), 'params.CLINIC.clinics');
+  const r70 = unitRes(C.calculate(state([opd])), 'O');
+  close(r70.coverageHours, 70 * 0.7 * 0.5 * 12 * 26);
+  opd.params.CLINIC.clinics = 80;
+  close(unitRes(C.calculate(state([opd])), 'O').coverageHours, 80 * 0.7 * 0.5 * 12 * 26);
+  const neg = manualUnit('N', 1, 1); neg.params.MANUAL.capacity = -1;
+  assert.match(C.calculate(state([neg])).issues.map(i => i.message).join(), /cannot be negative/);
+});
+
+test('restoreClinicFormula: OPD units switched to manual get the formula back only with complete clinic inputs', () => {
+  const st = state(E.getSeedUnits_());
+  st.units.filter(u => u.unitType === 'OPD').forEach(u => C.switchMethod(u, 'MANUAL'));
+  const inc = st.units.find(u => u.id === 'U-OPD-MED'); inc.params.CLINIC.rnPerClinic = '';
+  assert.equal(C.restoreClinicFormula(st).join(), 'U-OPD-SURG');
+  assert.equal(st.units.find(u => u.id === 'U-OPD-SURG').method, 'CLINIC');
+  assert.equal(inc.method, 'MANUAL');
+  assert.equal(C.restoreClinicFormula(st).length, 0);
 });

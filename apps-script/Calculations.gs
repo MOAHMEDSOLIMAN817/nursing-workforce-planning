@@ -100,8 +100,10 @@ function NWC_ENGINE_FACTORY_() {
   // ---------------------------------------------------------------------------
   var METHODS = {
     MANUAL: {
-      label: 'Required FTE entered manually', section: 'OTHER', key: ['requiredFTE'],
+      label: 'Required FTE entered manually', section: 'OTHER', key: ['capacity', 'requiredFTE'],
       fields: [
+        { key: 'capacity', label: 'Beds / clinics (for reference)', short: 'Beds / clinics', type: 'number', min: 0, optional: true,
+          help: 'Unit size for reference only; it does not change the typed Required FTE.' },
         { key: 'requiredFTE', label: 'Required FTE (entered manually)', short: 'Required FTE', type: 'number', min: 0,
           help: 'Your own figure. Leave & absence coverage is applied on top only when it is switched on.' }
       ]
@@ -1162,7 +1164,8 @@ function NWC_ENGINE_FACTORY_() {
     var res = calculate(state), byId = {}, done = [];
     res.units.forEach(function (r) { byId[r.id] = r; });
     (state.units || []).forEach(function (u) {
-      if (u.section === 'INPATIENT' || u.method === 'MANUAL') return;
+      // OPD clinic-based units keep their formula (clinics × active % × RN per clinic × open hours).
+      if (u.section === 'INPATIENT' || u.method === 'MANUAL' || u.method === 'CLINIC') return;
       var r = byId[u.id];
       var base = r && r.baseRequiredFTE !== null && r.baseRequiredFTE !== undefined && !r.isOverride ? round2(r.baseRequiredFTE) : '';
       if (r && r.isOverride) base = '';
@@ -1171,6 +1174,31 @@ function NWC_ENGINE_FACTORY_() {
       done.push(u.id);
     });
     return done;
+  }
+
+  /**
+   * OPD units that were switched to MANUAL but still hold complete clinic inputs go back to the
+   * clinic formula. The typed manual number is kept in params.MANUAL. Returns the ids restored.
+   */
+  function restoreClinicFormula(state) {
+    var done = [];
+    (state.units || []).forEach(function (u) {
+      var c = (u.params || {}).CLINIC;
+      if (u.section === 'INPATIENT' || u.method !== 'MANUAL' || unitTypeOf(u) !== 'OPD' || !c) return;
+      if (num(c.clinics) === null || num(c.utilisationPct) === null || num(c.rnPerClinic) === null) return;
+      switchMethod(u, 'CLINIC');
+      done.push(u.id);
+    });
+    return done;
+  }
+
+  /** "Beds / clinics" for any unit: clinic count for the clinic formula, else the reference size. */
+  function capacityPath(u) {
+    if (u.method === 'CLINIC') return 'params.CLINIC.clinics';
+    if (u.method === 'MANUAL') return 'params.MANUAL.capacity';
+    if (u.method === 'RATIO' || u.method === 'ACUITY') return 'params.' + u.method + '.beds';
+    if (u.method === 'OR') return 'params.OR.rooms';
+    return null;
   }
 
   function newContribution(id, category, unitId) {
@@ -1184,7 +1212,8 @@ function NWC_ENGINE_FACTORY_() {
     CONTRIB_CATEGORIES: CONTRIB_CATEGORIES,
     calculate: calculate, monthInfo: monthInfo, hoursModel: hoursModel, scheduleHours: scheduleHours,
     defaultSettings: defaultSettings, normalizeSettings: normalizeSettings, newUnit: newUnit, blankParams: blankParams,
-    switchMethod: switchMethod, convertOtherToManual: convertOtherToManual, unitTypeOf: unitTypeOf, allowedMethods: allowedMethods, newContribution: newContribution,
+    switchMethod: switchMethod, convertOtherToManual: convertOtherToManual, restoreClinicFormula: restoreClinicFormula,
+    capacityPath: capacityPath, unitTypeOf: unitTypeOf, allowedMethods: allowedMethods, newContribution: newContribution,
     num: num, bool: bool, round2: round2, ceilSafe: ceilSafe, isBlank: isBlank, normName: normName, clone: clone
   };
 }

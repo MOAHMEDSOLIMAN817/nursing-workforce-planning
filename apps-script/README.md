@@ -67,7 +67,8 @@ Excel-like tables. Numbers update as you type, and Save writes them to the sheet
 15. On the **Settings** sheet tab, check that `reportingMonth` still shows `YYYY-MM` text and has not been converted to a date.
 
 **Updating an existing install:** replacing the files and reopening runs any pending migration once (v3 switches
-Other & OPD units to manual Required FTE, prefilled with their current values).
+Other units to manual Required FTE, prefilled with their current values; v4 keeps the OPD clinic formula and fills
+beds / clinics from the workbook).
 
 **Updating an existing v1 install:** replace all 8 files, then reload the Sheet and open the calculator (or run
 `initializeSystem`). This runs the one-time v2 migration:
@@ -83,9 +84,11 @@ Saved inputs are not overwritten. The `Audit_Log` records what was migrated.
   "Needs data" list. Click a unit in the list to jump straight to it. The unit table is sorted by largest shortage.
 - **Inpatient:** main inputs, nurses now, required FTE, gap and status. **▸** opens a short panel with the unit's
   inputs, staff and hours, and its result, including exactly which data is missing.
-- **Other & OPD:** one table — type **Required FTE** and **Nurses now**; the gap and status update instantly. No methods,
-  lists or detail panels. Add Unit asks only for a name (and optionally the required FTE). Calculated methods remain in
-  Full view.
+- **Other & OPD:** one table — Unit, **Beds / Clinics**, **Required FTE**, **Nurses now**, Gap and Status. Type the
+  required FTE for each unit; beds / clinics is for reference. **OPD – Surgical and OPD – Medical keep their clinic
+  formula** (clinics × active % × RN per clinic × opening hours): change the number of clinics and the required FTE
+  recalculates. No methods, lists or detail panels. Add Unit asks only for a name (optionally beds / clinics and required
+  FTE). Calculated methods remain in Full view.
 - **Settings:** 10 basic fields.
 - Everything else is in **Full view** (described below). Both views use the same data and calculations.
 
@@ -131,8 +134,8 @@ archive and delete actions all ask for confirmation.
 ## Tests
 
 ```bash
-npm run test:gas   # 77 engine, server and Apps Script-compatibility tests (node:test); also run by `npm test`
-npm run test:ui    # browser end-to-end test (106 checks; needs Playwright/Chromium)
+npm run test:gas   # 80 engine, server and Apps Script-compatibility tests (node:test); also run by `npm test`
+npm run test:ui    # browser end-to-end test (112 checks; needs Playwright/Chromium)
 ```
 
 See `PROJECT_MEMORY.md` for calculation definitions and design decisions.

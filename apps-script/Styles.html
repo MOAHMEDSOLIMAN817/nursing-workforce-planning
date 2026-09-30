@@ -117,16 +117,19 @@
   .unitlink { font-size: 14px; padding: 0; text-align: left; }
   body.simple table.grid input.hc { width: 72px; }
   table.grid.manual input.req { width: 120px; min-width: 0; font-weight: 600; }
-  table.grid.manual input.hc { width: 72px; min-width: 0; }
+  table.grid.manual input.hc, table.grid.manual input.cap { width: 72px; min-width: 0; }
+  table.grid.manual td.calcreq b { font-size: 15px; color: var(--navy); }
   table.grid.manual td .sub { text-align: right; }
+  table.grid.manual td.name .sub { text-align: left; }
   @media (max-width: 700px) {
     table.grid.manual th, table.grid.manual td { padding: 7px 6px; }
     table.grid.manual th { white-space: normal; font-size: 10.5px; }
     table.grid.manual td.name { font-size: 13px; }
     table.grid.manual .sub { white-space: normal; }
-    table.grid.manual th:nth-child(5), table.grid.manual td:nth-child(5) { display: none; }
-    table.grid.manual input.req { width: 72px; }
-    table.grid.manual input.hc { width: 52px; }
+    table.grid.manual th:nth-child(6), table.grid.manual td:nth-child(6) { display: none; }
+    table.grid.manual input.req { width: 62px; }
+    body table.grid.manual input.hc, body table.grid.manual input.cap { width: 48px; }
+    table.grid.manual .dr, table.grid.manual .gap { font-size: 12px; white-space: normal; }
     table.grid.manual .gap { white-space: normal; font-size: 12.5px; }
   }
   .simple-detail { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }

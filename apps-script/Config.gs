@@ -10,7 +10,7 @@
  */
 var APP_CONFIG = {
   APP_TITLE: 'Nursing Workforce Calculator',
-  SCHEMA_VERSION: 3,
+  SCHEMA_VERSION: 4,
   SHEETS: {
     SETTINGS: 'Settings',
     UNITS: 'Units',
@@ -135,7 +135,18 @@ function getSeedUnits_() {
       { clinics: 30, utilisationPct: 70, rnPerClinic: 0.25 },
       { minRNPerShift: 1, notes: 'From workbook: 30 clinics, 70% active, 1 RN per 4 clinics. Workbook mixed 24 h and 12 h — 12 h used; confirm.' })
   ];
+  // Reference size (beds / rooms / units) from the workbook for manual units.
+  var cap = getWorkbookCapacity_();
+  others.forEach(function (u) { if (u.method !== 'CLINIC') u.params.MANUAL = { capacity: cap[u.id] === undefined ? '' : cap[u.id], requiredFTE: '' }; });
   var all = units.concat(others);
   all.forEach(function (u, i) { u.sortOrder = i + 1; });
   return all;
+}
+
+/**
+ * "Operational Beds / Units" from the workbook for Other units (reference only).
+ * Endoscopy / Cathlab were one row (5) — placed on Endoscopy. CSSD had no reliable figure.
+ */
+function getWorkbookCapacity_() {
+  return { 'U-DR-NU': 5, 'U-DR': 5, 'U-OR': 4, 'U-ER': 25, 'U-ENDO': 5, 'U-ANES': 5 };
 }

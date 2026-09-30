@@ -680,21 +680,33 @@
   function renderOtherSimple() {
     var units = activeUnits('OTHER'), hm = App.result.hours;
     var h = '<div class="toolbar"><button type="button" class="primary" data-act="add-unit" data-sec="OTHER">+ Add Unit</button>' +
-      '<span class="note">Type the required nurses (FTE) for each unit — the gap updates instantly. Press <b>Save</b> when done.</span>' +
+      '<span class="note">Type the required nurses (FTE) for each unit — OPD clinics are calculated from the number of clinics. Press <b>Save</b> when done.</span>' +
       (hm.applyReliefFactor ? '<span class="tag teal">Leave coverage × ' + esc(hm.reliefFactor) + ' added to the numbers you type</span>' : '') + '</div>';
-    h += '<div class="tablewrap"><table class="grid manual"><thead><tr><th class="l">Unit</th><th>Required FTE</th><th>Nurses now</th><th>Gap</th><th class="c">Status</th></tr></thead><tbody>';
+    h += '<div class="tablewrap"><table class="grid manual"><thead><tr><th class="l">Unit</th><th>Beds / Clinics</th><th>Required FTE</th><th>Nurses now</th><th>Gap</th><th class="c">Status</th></tr></thead><tbody>';
     units.forEach(function (u) {
-      var r = res(u.id) || {}, manual = u.method === 'MANUAL';
+      var r = res(u.id) || {}, manual = u.method === 'MANUAL', clinic = u.method === 'CLINIC', cp = C.capacityPath(u);
       var ph = !manual && r.baseRequiredFTE !== null && r.baseRequiredFTE !== undefined ? n2(r.baseRequiredFTE) + ' (calculated)' : 'enter';
+      var reqCell = clinic
+        ? '<td class="calcreq" data-region="clinicreq" data-arg="' + esc(u.id) + '"></td>'
+        : '<td>' + uIn(u, 'params.MANUAL.requiredFTE', 'req', ' placeholder="' + esc(ph) + '" aria-label="Required FTE for ' + esc(u.name) + '"') +
+          '<span class="sub" data-region="mfinal" data-arg="' + esc(u.id) + '"></span></td>';
       h += '<tr class="unit' + (r.isOpen === false ? ' closed' : '') + (r.counted === false ? ' excluded' : '') + '" data-row="' + esc(u.id) + '">' +
-        '<td class="l name"><b>' + esc(u.name) + '</b>' + (r.isOpen === false ? '<span class="sub">closed</span>' : '') + '</td>' +
-        '<td>' + uIn(u, 'params.MANUAL.requiredFTE', 'req', ' placeholder="' + esc(ph) + '" aria-label="Required FTE for ' + esc(u.name) + '"') +
-        '<span class="sub" data-region="mfinal" data-arg="' + esc(u.id) + '"></span></td>' +
+        '<td class="l name"><b>' + esc(u.name) + '</b>' + (r.isOpen === false ? '<span class="sub">closed</span>' : clinic ? '<span class="sub">clinic formula</span>' : '') + '</td>' +
+        '<td>' + (cp ? uIn(u, cp, 'cap', ' aria-label="' + (clinic ? 'Clinics' : 'Beds / clinics') + ' for ' + esc(u.name) + '"' + (clinic ? '' : ' placeholder="—"')) : '<span class="note">—</span>') + '</td>' +
+        reqCell +
         '<td>' + uIn(u, 'currentRNHeadcount', 'hc', ' aria-label="Nurses now in ' + esc(u.name) + '"') + '</td>' +
         out(u.id, 'adjustedGap', 'gap') + out(u.id, 'status', 'status', 'c') + '</tr>';
     });
     h += '</tbody><tfoot data-region="mtotals"></tfoot></table></div>';
     return h;
+  }
+  /** OPD clinic formula result: clinics × active % × RN per clinic × opening hours (read-only here). */
+  function clinicReqRegion(id) {
+    var u = unit(id), r = res(id); if (!u || !r) return '';
+    var p = (u.params || {}).CLINIC || {};
+    if (r.requiredFTE === null) return DR + '<span class="sub">' + esc(r.missing.join(', ')) + '</span>';
+    return '<b>' + n2(r.requiredFTE) + '</b><span class="sub">' + esc(p.clinics) + ' × ' + esc(p.utilisationPct) + '% × ' + esc(p.rnPerClinic) + ' RN' +
+      (r.reliefFactorApplied ? ' × ' + r.reliefFactorApplied : '') + '</span>';
   }
   function manualFinalRegion(id) {
     var r = res(id);
@@ -704,7 +716,7 @@
     var rs = App.result.units.filter(function (r) { return r.section === 'OTHER' && r.counted; });
     var known = rs.filter(function (r) { return r.requiredFTE !== null; });
     var sh = known.reduce(function (a, r) { return a + Math.max(0, r.adjustedGap); }, 0);
-    return '<tr class="total"><td class="l">TOTAL' + (known.length < rs.length ? '<span class="sub">' + (rs.length - known.length) + ' unit(s) without a required number</span>' : '') + '</td>' +
+    return '<tr class="total"><td class="l">TOTAL' + (known.length < rs.length ? '<span class="sub">' + (rs.length - known.length) + ' unit(s) without a required number</span>' : '') + '</td><td></td>' +
       '<td>' + n2(known.reduce(function (a, r) { return a + r.requiredFTE; }, 0)) + '</td><td>' + rs.reduce(function (a, r) { return a + r.currentHC; }, 0) + '</td>' +
       '<td class="l"><span class="gap short">▲ Shortage ' + n2(sh) + '</span></td><td></td></tr>';
   }
@@ -802,7 +814,7 @@
     totals: totalsRow, req: reqRegion, calc: calcRegion, tech: techRegion, basis: basisRegion, ct: ctRegion,
     scenario: scenarioRegion, kpis: kpisRegion, otcards: otCardsRegion, waterfall: waterfallRegion, unitsTable: unitsTableRegion,
     transfer: transferRegion, costs: costsRegion, checks: checksRegion, hours: hoursRegion, pools: poolsRegion, issues: issuesRegion,
-    mfinal: manualFinalRegion, mtotals: manualTotals,
+    mfinal: manualFinalRegion, mtotals: manualTotals, clinicreq: clinicReqRegion,
     hero: heroRegion, skpis: simpleKpisRegion, needsData: needsDataRegion, stable: simpleTableRegion, stotals: simpleTotals, sresult: simpleResultRegion
   };
 
@@ -877,12 +889,14 @@
   function addUnit(section) {
     if (simple() && section === 'OTHER') {
       confirmBox('Add unit', '<div class="form" style="grid-template-columns:1fr"><label>Unit name<input type="text" id="newUnitName"></label>' +
+        '<label>Beds / clinics (optional)<input type="text" inputmode="decimal" id="newUnitCap"></label>' +
         '<label>Required FTE (optional now)<input type="text" inputmode="decimal" id="newUnitReq"></label></div>', function () {
         var name = ($('newUnitName').value || '').trim();
         if (!name) { toast('Enter a unit name.'); return false; }
         if (App.state.units.some(function (x) { return !C.bool(x.archived) && C.normName(x.name) === C.normName(name); })) { toast('A unit with that name already exists.'); return false; }
         var u = C.newUnit(newId('U-'), name, 'OTHER', 'MANUAL', 'OTHER');
         u.params.MANUAL.requiredFTE = ($('newUnitReq').value || '').trim();
+        u.params.MANUAL.capacity = ($('newUnitCap').value || '').trim();
         u.sortOrder = App.state.units.reduce(function (m, x) { return Math.max(m, Number(x.sortOrder) || 0); }, 0) + 1;
         App.state.units.push(u);
         recompute(); renderAll();
