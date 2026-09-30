@@ -5,7 +5,9 @@
 (function () {
   'use strict';
   var C = NwcCalc, S = C.STATUS;
-  var App = { saved: null, state: null, revision: 0, result: null, page: 'summary', open: {}, view: { INPATIENT: 'staff', OTHER: 'staff' }, dirty: false, saving: false };
+  var App = { saved: null, state: null, revision: 0, result: null, page: 'summary', open: {}, view: { INPATIENT: 'staff', OTHER: 'staff' }, dirty: false, saving: false, mode: 'simple' };
+  try { if (window.localStorage && localStorage.getItem('nwcMode') === 'full') App.mode = 'full'; } catch (e) { /* storage unavailable: keep default */ }
+  function simple() { return App.mode === 'simple'; }
   var $ = function (id) { return document.getElementById(id); };
   var DR = '<span class="dr">Data Required</span>';
 
@@ -77,7 +79,8 @@
 
   function refreshChrome() {
     var r = App.result, sm = r.summary;
-    $('monthPill').textContent = (r.month ? r.month.ym + ' · ' + r.month.days + ' days · ' + r.month.fridays + ' Fridays' : 'Invalid month') +
+    if (simple()) $('monthPill').textContent = r.month ? 'Month: ' + r.month.ym : 'Set the month in Settings';
+    else $('monthPill').textContent = (r.month ? r.month.ym + ' · ' + r.month.days + ' days · ' + r.month.fridays + ' Fridays' : 'Invalid month') +
       ' · ' + (r.hours.hoursPerFTE ? r.hours.hoursPerFTE.toFixed(2) + ' h per FTE' : 'hours per FTE invalid');
     var pill = $('savePill');
     pill.textContent = App.saving ? 'Saving…' : App.dirty ? 'Unsaved changes' : 'All changes saved';
@@ -85,11 +88,15 @@
     $('btnSave').disabled = !App.dirty || App.saving;
     var errs = r.issues.filter(function (x) { return x.level === 'error'; });
     var html = '';
-    if (errs.length) html += '<div class="banner err"><b>' + errs.length + ' validation error(s) — saving is blocked until fixed.</b> ' +
+    if (errs.length && simple()) html += '<div class="banner err"><b>Please fix:</b> ' + errs.slice(0, 3).map(function (x) { return esc(x.scope + ' — ' + x.message); }).join(' · ') + (errs.length > 3 ? ' · +' + (errs.length - 3) + ' more' : '') + '</div>';
+    else if (errs.length) html += '<div class="banner err"><b>' + errs.length + ' validation error(s) — saving is blocked until fixed.</b> ' +
       errs.slice(0, 4).map(function (x) { return esc(x.scope + ': ' + x.message); }).join(' · ') + (errs.length > 4 ? ' · …see Settings → Data quality' : '') + '</div>';
-    if (sm.provisional) html += '<div class="banner warn"><b>' + esc(sm.totalsLabel) + '.</b> ' + esc(sm.provisionalReasons.slice(0, 5).join(' · ')) +
+    if (sm.provisional && simple()) html += '<div class="banner warn">' + (sm.unitsDataRequired ? '<b>' + sm.unitsDataRequired + ' unit(s) still need data.</b> Results cover completed units only.' : '<b>Results are provisional.</b> Some units need confirmation.') + '</div>';
+    else if (sm.provisional) html += '<div class="banner warn"><b>' + esc(sm.totalsLabel) + '.</b> ' + esc(sm.provisionalReasons.slice(0, 5).join(' · ')) +
       (sm.provisionalReasons.length > 5 ? ' · +' + (sm.provisionalReasons.length - 5) + ' more' : '') + '</div>';
     $('banners').innerHTML = html;
+    Array.prototype.forEach.call(document.querySelectorAll('[data-act="mode"]'), function (b) { b.classList.toggle('on', b.getAttribute('data-v') === App.mode); });
+    document.body.classList.toggle('simple', simple());
   }
 
   /** Update calculated cells in place so the input being edited keeps focus. */
@@ -175,6 +182,7 @@
   // Unit pages (Inpatient / Other & OPD)
   // ---------------------------------------------------------------------------
   function renderUnits(section) {
+    if (simple()) return renderUnitsSimple(section);
     var units = activeUnits(section), view = App.view[section];
     var h = '<div class="toolbar"><button type="button" class="primary" data-act="add-unit" data-sec="' + section + '">+ Add Unit</button>' +
       '<div class="seg"><button type="button" data-act="view" data-sec="' + section + '" data-v="staff" class="' + (view === 'staff' ? 'on' : '') + '">Staffing</button>' +
@@ -217,6 +225,7 @@
   function reqRegion(id) {
     var r = res(id); if (!r) return '';
     if (r.requiredFTE === null) return DR;
+    if (simple()) return '<b>' + n2(r.requiredFTE) + '</b>';
     var basis = r.isOverride ? 'manual override' : r.basis === 'WHOLE_SHIFT' ? 'whole-shift basis' : 'average workload';
     return '<b>' + n2(r.requiredFTE) + '</b><span class="sub">' + basis + ' · est. ' + r.establishment + '</span>';
   }
@@ -243,6 +252,7 @@
   // Detail panel (advanced inputs)
   // ---------------------------------------------------------------------------
   function renderDetail(u) {
+    if (simple()) return renderDetailSimple(u);
     var def = C.METHODS[u.method] || { fields: [] }, p = ensureParams(u), pre = 'params.' + u.method + '.';
     var others = App.state.units.filter(function (x) { return x.id !== u.id && !C.bool(x.archived); });
     var h = '<div class="detail">';
@@ -377,6 +387,7 @@
   // Summary (executive dashboard)
   // ---------------------------------------------------------------------------
   function renderSummary() {
+    if (simple()) return renderSummarySimple();
     var h = '<div data-region="scenario"></div><div data-region="kpis"></div>';
     h += '<h2>How the final gap is built <span class="hint">sum of per-unit shortages after each credit — surpluses in one unit never offset another</span></h2><div class="card" data-region="waterfall"></div>';
     h += '<h2>Estimated overtime required <span class="hint">not actual overtime worked or payroll payable</span></h2><div data-region="otcards"></div>';
@@ -524,6 +535,7 @@
   // Settings
   // ---------------------------------------------------------------------------
   function renderSettings() {
+    if (simple()) return renderSettingsSimple();
     var s = App.state.settings, groups = {};
     C.SETTINGS_FIELDS.forEach(function (f) { (groups[f.group] = groups[f.group] || []).push(f); });
     var h = '<div class="banner info" style="margin:0 0 16px">All values are planning assumptions requiring local approval. Imported ratios are not mandatory clinical standards.</div><div class="settings-grid">';
@@ -587,10 +599,153 @@
     return '<ul class="lines issues">' + is.map(function (x) { return '<li class="' + x.level + '"><b>' + x.level.toUpperCase() + '</b> ' + esc(x.scope) + ': ' + esc(x.message) + '</li>'; }).join('') + '</ul>';
   }
 
+
+  // ---------------------------------------------------------------------------
+  // SIMPLE VIEW — the default. Same data, same engine; fewer choices on screen.
+  // ---------------------------------------------------------------------------
+  function setMode(m) {
+    App.mode = m === 'full' ? 'full' : 'simple';
+    try { localStorage.setItem('nwcMode', App.mode); } catch (e) { /* ignore */ }
+    refreshChrome(); renderAll();
+  }
+  function availableFTE(r) { return r.requiredFTE === null ? null : r.requiredFTE - r.adjustedGap; }
+
+  function renderSummarySimple() {
+    return '<div data-region="hero"></div><div data-region="skpis"></div><div data-region="needsData"></div>' +
+      '<h2>Units <span class="hint">largest shortage first</span></h2><div class="tablewrap" data-region="stable"></div>' +
+      '<p class="note">Switch to <button type="button" class="link" data-act="mode" data-v="full">Full view</button> for the gap breakdown, transfers, costs and checks.</p>';
+  }
+
+  function heroRegion() {
+    var sm = App.result.summary, short = sm.finalShortageFTE > 0.005;
+    var ot = sm.uncoveredHours > 0.5
+      ? 'Estimated overtime needed: <b>' + f0(sm.uncoveredHours) + ' h</b>' + (sm.feasibleOTHours === null ? ' — set overtime eligibility in Settings to see how much is feasible.' : ' · feasible with current staff: <b>' + f0(sm.feasibleOTHours) + ' h</b>.')
+      : 'No overtime needed.';
+    return '<div class="card hero ' + (short ? 'short' : 'ok') + '"><div class="hero-k">' + (short ? 'Nurses needed' : 'Staffing') + '</div>' +
+      '<div class="hero-v">' + (short ? '▲ ' + n2(sm.finalShortageFTE) + ' <small>FTE short</small>' : '● No shortage') + '</div>' +
+      '<div class="hero-s">' + (short ? 'in ' + sm.shortageUnits + ' unit(s)' : 'All completed units are covered') +
+      (sm.unitsDataRequired ? ' · ' + sm.unitsDataRequired + ' unit(s) not yet calculated' : '') + '. ' + ot + '</div></div>';
+  }
+
+  function simpleKpisRegion() {
+    var sm = App.result.summary;
+    var avail = sm.requiredFTE - (sm.finalShortageFTE - sm.finalSurplusFTE);
+    return '<div class="kpis four">' +
+      kpi('Required', n2(sm.requiredFTE) + '<small>FTE</small>', sm.completedUnits + ' calculated units') +
+      kpi('Available', n2(avail) + '<small>FTE</small>', 'current nurses + CNC/PCA credit') +
+      kpi('Shortage', n2(sm.finalShortageFTE) + '<small>FTE</small>', sm.remainingRecruitFTE === null ? 'before overtime' : 'after overtime: ' + n2(sm.remainingRecruitFTE) + ' FTE to recruit', sm.finalShortageFTE > 0.005 ? 'short' : 'surplus') +
+      kpi('Staff (headcount)', sm.totalHC.toLocaleString('en-US'), 'RN ' + sm.currentRNHC + ' · CNC ' + sm.cncHC + ' · PCA/PCT ' + sm.pcaHC) +
+      '</div>';
+  }
+
+  function needsDataRegion() {
+    var list = App.result.units.filter(function (r) { return r.counted && r.status === S.DATA; });
+    if (!list.length) return '';
+    return '<div class="card needs"><b>Needs data (' + list.length + '):</b> ' + list.map(function (r) {
+      return '<button type="button" class="chip" data-act="goto" data-id="' + esc(r.id) + '">' + esc(r.name) + ' ›</button>';
+    }).join('') + '<div class="note">Click a unit to enter its missing numbers.</div></div>';
+  }
+
+  function simpleTableRegion() {
+    var rows = App.result.units.slice().sort(function (a, b) {
+      var ka = a.requiredFTE === null ? -1e9 : a.adjustedGap, kb = b.requiredFTE === null ? -1e9 : b.adjustedGap;
+      return kb - ka;
+    });
+    return '<table class="grid"><thead><tr><th class="l">Unit</th><th>Required</th><th>Available</th><th>Gap</th><th class="c">Status</th></tr></thead><tbody>' +
+      rows.map(function (r) {
+        return '<tr class="unit' + (r.counted ? '' : ' excluded') + '"><td class="l name"><button type="button" class="link unitlink" data-act="goto" data-id="' + esc(r.id) + '">' + esc(r.name) + '</button></td>' +
+          (r.requiredFTE === null
+            ? '<td class="note">—</td><td class="note">' + n2(r.currentFTE) + ' RN now</td><td class="note">—</td>'
+            : '<td>' + n2(r.requiredFTE) + '</td><td>' + n2(availableFTE(r)) + '</td><td>' + gap(r.adjustedGap) + '</td>') +
+          '<td class="c">' + badge(r.status) + '</td></tr>';
+      }).join('') + '</tbody></table>';
+  }
+
+  function renderUnitsSimple(section) {
+    var units = activeUnits(section);
+    var h = '<div class="toolbar"><button type="button" class="primary" data-act="add-unit" data-sec="' + section + '">+ Add Unit</button>' +
+      '<span class="note">Type in the blue boxes — results update instantly. Press <b>Save</b> when done.</span></div>';
+    h += '<div class="tablewrap"><table class="grid"><thead><tr><th class="l">Unit</th><th class="l">Main inputs</th><th>Nurses now</th><th>Required FTE</th><th>Gap</th><th class="c">Status</th><th></th></tr></thead><tbody>';
+    units.forEach(function (u) {
+      var r = res(u.id) || {}, open = !!App.open[u.id];
+      h += '<tr class="unit' + (open ? ' open' : '') + (r.isOpen === false ? ' closed' : '') + (r.counted === false ? ' excluded' : '') + '" data-row="' + esc(u.id) + '">' +
+        '<td class="l name"><b>' + esc(u.name) + '</b>' + (r.isOpen === false ? '<span class="sub">closed</span>' : '') + '</td>' +
+        '<td class="l">' + keyInputs(u) + '</td>' +
+        '<td>' + uIn(u, 'currentRNHeadcount', 'hc', ' title="Current RN headcount"') + '</td>' +
+        '<td data-region="req" data-arg="' + esc(u.id) + '"></td>' + out(u.id, 'adjustedGap', 'gap') + out(u.id, 'status', 'status', 'c') +
+        '<td><button type="button" class="expander" data-act="toggle" data-id="' + esc(u.id) + '" aria-expanded="' + open + '" title="More">' + (open ? '▾' : '▸') + '</button></td></tr>';
+      if (open) h += '<tr class="detail-row"><td class="detail-cell" colspan="7">' + renderDetailSimple(u) + '</td></tr>';
+    });
+    h += '</tbody><tfoot data-region="stotals" data-arg="' + section + '"></tfoot></table></div>';
+    return h;
+  }
+
+  function simpleTotals(section) {
+    var rs = App.result.units.filter(function (r) { return r.section === section && r.counted; });
+    var known = rs.filter(function (r) { return r.requiredFTE !== null; });
+    var req = known.reduce(function (a, r) { return a + r.requiredFTE; }, 0);
+    var sh = known.reduce(function (a, r) { return a + Math.max(0, r.adjustedGap); }, 0);
+    return '<tr class="total"><td class="l">TOTAL' + (known.length < rs.length ? '<span class="sub">' + (rs.length - known.length) + ' unit(s) not yet calculated</span>' : '') + '</td><td></td>' +
+      '<td>' + rs.reduce(function (a, r) { return a + r.currentHC; }, 0) + '</td><td>' + n2(req) + '</td><td class="l"><span class="gap short">▲ Shortage ' + n2(sh) + '</span></td><td></td><td></td></tr>';
+  }
+
+  function renderDetailSimple(u) {
+    var def = C.METHODS[u.method] || { fields: [] }, p = ensureParams(u), pre = 'params.' + u.method + '.';
+    var h = '<div class="detail simple-detail"><div class="card"><h3>What does this unit do?</h3><div class="form">';
+    if (C.allowedMethods(u).length > 1) h += '<label>Calculate by' + uSel(u, 'method', methodOptions(u), true) + '</label>';
+    h += def.fields.filter(function (f) { return f.key !== 'shiftCensus'; }).map(function (f) { return field(u, f, pre); }).join('') + '</div>';
+    Object.keys(def.tables || {}).forEach(function (tk) {
+      var t = def.tables[tk], rows = p[tk] || [];
+      h += '<h3>' + esc(t.label) + '</h3><div class="tablewrap"><table class="grid compact"><thead><tr>' +
+        t.columns.map(function (c) { return '<th' + (c.type === 'text' ? ' class="l"' : '') + '>' + esc(c.label) + '</th>'; }).join('') + '<th></th></tr></thead><tbody>';
+      rows.forEach(function (row, i) {
+        h += '<tr>' + t.columns.map(function (c) {
+          var path = pre + tk + '.' + i + '.' + c.key;
+          return '<td' + (c.type === 'text' ? ' class="l"' : '') + '>' + (c.type === 'text' ? uTxt(u, path, 'name') : uIn(u, path)) + '</td>';
+        }).join('') + '<td><button type="button" class="link" data-act="del-row" data-id="' + esc(u.id) + '" data-tk="' + tk + '" data-i="' + i + '">remove</button></td></tr>';
+      });
+      h += '</tbody></table></div><div class="toolbar"><button type="button" class="small" data-act="add-row" data-id="' + esc(u.id) + '" data-tk="' + tk + '">+ Add row</button></div>';
+    });
+    h += '</div><div class="card"><h3>Staff &amp; hours</h3><div class="form">' +
+      '<label>Nurses now (RN headcount)' + uIn(u, 'currentRNHeadcount') + '</label>' +
+      '<label>' + (u.section === 'INPATIENT' ? 'Minimum nurses per shift' : 'Minimum nurses while open') + uIn(u, 'minRNPerShift') + '</label>';
+    if (u.method !== 'ER') h += '<label>Open hours per day' + uIn(u, 'schedule.weekdayHours') + '</label><label>Friday hours (0 = closed)' + uIn(u, 'schedule.fridayHours') + '</label>';
+    h += '<label class="chk">' + uChk(u, 'isOpen', true) + 'Unit is open</label></div></div>' +
+      '<div class="card"><h3>Result</h3><div data-region="sresult" data-arg="' + esc(u.id) + '"></div>' +
+      '<p class="note">CNC/PCA allocations, overrides, schedule days and archiving are in <button type="button" class="link" data-act="mode" data-v="full">Full view</button>.</p></div></div>';
+    return h;
+  }
+
+  function simpleResultRegion(id) {
+    var r = res(id); if (!r) return '';
+    if (r.status === S.DATA) return '<div class="banner warn" style="margin:0">Enter: ' + esc(r.missing.join(', ')) + '</div>';
+    if (r.status === S.CLOSED) return '<p class="note">Closed — no nurses required.</p>';
+    return '<ul class="result"><li><span>Required</span><b>' + n2(r.requiredFTE) + ' FTE</b></li>' +
+      '<li><span>Available</span><b>' + n2(availableFTE(r)) + ' FTE</b></li>' +
+      '<li><span>Gap</span><b>' + gap(r.adjustedGap) + '</b></li>' +
+      '<li><span>Overtime needed</span><b>' + (r.uncoveredHours > 0 ? f0(r.uncoveredHours) + ' h' : 'none') + '</b></li></ul>';
+  }
+
+  var BASIC_SETTINGS = ['reportingMonth', 'contractedWeeklyHours', 'leaveHours', 'trainingHours', 'otherUnavailableHours',
+    'otMaxHoursPerRN', 'otEligiblePct', 'costOTPerHour', 'cncHeadcount', 'pcaHeadcount'];
+  function renderSettingsSimple() {
+    var s = App.state.settings;
+    var h = '<div class="card" style="max-width:860px"><h3>Basic settings <span class="hint">planning assumptions — change to match your hospital</span></h3><div class="form">';
+    BASIC_SETTINGS.forEach(function (k) {
+      var f = C.SETTINGS_FIELDS.filter(function (x) { return x.key === k; })[0], v = s[k] === undefined ? '' : s[k];
+      h += '<label>' + esc(f.label) + '<input type="' + (f.type === 'month' ? 'month' : 'text') + '"' + (f.type === 'number' ? ' inputmode="decimal"' : '') +
+        ' data-s="' + k + '" value="' + esc(v) + '"' + (f.type === 'month' ? ' data-rr="1"' : '') + '></label>';
+    });
+    h += '</div><div data-region="hours" style="margin-top:12px"></div>' +
+      '<p class="note">More settings (FTE method, CNC/PCA contribution %, allocations, costs, archived units) are in <button type="button" class="link" data-act="mode" data-v="full">Full view</button>.</p></div>';
+    return h;
+  }
+
   var REGIONS = {
     totals: totalsRow, req: reqRegion, calc: calcRegion, tech: techRegion, basis: basisRegion, ct: ctRegion,
     scenario: scenarioRegion, kpis: kpisRegion, otcards: otCardsRegion, waterfall: waterfallRegion, unitsTable: unitsTableRegion,
-    transfer: transferRegion, costs: costsRegion, checks: checksRegion, hours: hoursRegion, pools: poolsRegion, issues: issuesRegion
+    transfer: transferRegion, costs: costsRegion, checks: checksRegion, hours: hoursRegion, pools: poolsRegion, issues: issuesRegion,
+    hero: heroRegion, skpis: simpleKpisRegion, needsData: needsDataRegion, stable: simpleTableRegion, stotals: simpleTotals, sresult: simpleResultRegion
   };
 
   // ---------------------------------------------------------------------------
@@ -633,6 +788,13 @@
     if (b.hasAttribute('data-page')) return showPage(b.getAttribute('data-page'));
     var act = b.getAttribute('data-act'), id = b.getAttribute('data-id'), i = Number(b.getAttribute('data-i'));
     if (act === 'toggle') { App.open[id] = !App.open[id]; renderAll(); }
+    else if (act === 'mode') setMode(b.getAttribute('data-v'));
+    else if (act === 'goto') {
+      var gu = unit(id); App.open[id] = true;
+      showPage(gu.section === 'INPATIENT' ? 'inpatient' : 'other');
+      var row = document.querySelector('#page-' + App.page + ' tr[data-row="' + id + '"]');
+      if (row) window.scrollTo(0, row.getBoundingClientRect().top + window.pageYOffset - document.querySelector('.topbar').offsetHeight - 12);
+    }
     else if (act === 'view') { App.view[b.getAttribute('data-sec')] = b.getAttribute('data-v'); renderAll(); }
     else if (act === 'add-unit') addUnit(b.getAttribute('data-sec'));
     else if (act === 'archive') archiveUnit(id);
@@ -650,6 +812,7 @@
     Array.prototype.forEach.call(document.querySelectorAll('#tabs button'), function (b) { b.classList.toggle('active', b.getAttribute('data-page') === p); });
     Array.prototype.forEach.call(document.querySelectorAll('.page'), function (s) { s.classList.toggle('active', s.id === 'page-' + p); });
     renderAll();
+    window.scrollTo(0, 0);
   }
 
   function addUnit(section) {

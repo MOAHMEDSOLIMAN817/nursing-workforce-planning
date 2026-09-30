@@ -97,6 +97,31 @@
   .seg button { border: 0; border-radius: 0; padding: 6px 14px; }
   .seg button.on { background: var(--navy); color: #fff; }
 
+  /* Simple view */
+  .seg.dark { background: transparent; border-color: rgba(255, 255, 255, .3); }
+  .seg.dark button { background: transparent; color: #dfe7f3; }
+  .seg.dark button.on { background: #fff; color: var(--navy); font-weight: 600; }
+  .hero { display: flex; flex-direction: column; gap: 4px; padding: 22px 24px; margin-bottom: 14px; border-left: 6px solid var(--teal); }
+  .hero.short { border-left-color: var(--short); }
+  .hero-k { color: var(--muted); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .hero-v { font-size: 40px; font-weight: 750; color: var(--navy); line-height: 1.15; }
+  .hero.short .hero-v { color: var(--short); }
+  .hero.ok .hero-v { color: var(--surplus); }
+  .hero-v small { font-size: 18px; font-weight: 600; }
+  .hero-s { color: var(--ink); font-size: 14.5px; }
+  .kpis.four { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+  .needs { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .needs .note { flex-basis: 100%; }
+  .chip { border-radius: 999px; padding: 5px 12px; background: var(--warn-bg); border-color: #f0d58a; color: var(--warn); font-weight: 600; font-size: 13px; }
+  .chip:hover { background: #ffecb3; }
+  .unitlink { font-size: 14px; padding: 0; text-align: left; }
+  body.simple table.grid input.hc { width: 72px; }
+  .simple-detail { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  ul.result { list-style: none; margin: 0; padding: 0; }
+  ul.result li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line-2); font-size: 15px; }
+  ul.result li:last-child { border-bottom: 0; }
+  @media (max-width: 700px) { .hero-v { font-size: 30px; } }
+
   /* Tables */
   .tablewrap { overflow: auto; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); max-width: 100%; }
   table.grid { border-collapse: separate; border-spacing: 0; width: 100%; font-variant-numeric: tabular-nums; }

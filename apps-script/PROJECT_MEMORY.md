@@ -169,6 +169,10 @@ first `getAppData()` when `schema_version < 2`:
 
 ## 10. Implementation notes
 
+- **UI modes:** Simple (default) and Full. The choice is stored in `localStorage` as `nwcMode`; if storage is unavailable the
+  app falls back to Simple. Simple mode only changes which renderers run (`render*Simple`). Bindings, engine and
+  storage are identical, so edits in either view are the same data.
+
 - `Calculations.gs` is pure and everything lives inside `NWC_ENGINE_FACTORY_`,
   which is serialised into the page.
 - Functions called from menus or `google.script.run` must not end in `_`.
@@ -177,4 +181,4 @@ first `getAppData()` when `schema_version < 2`:
   - `engine.test.cjs` (37)
   - `server.test.cjs` (13, including save/reload persistence and v1→v2 migration)
   - `gas-compat.test.cjs` (12)
-  - `ui-smoke.cjs` (60 browser checks)
+  - `ui-smoke.cjs` (71 browser checks)

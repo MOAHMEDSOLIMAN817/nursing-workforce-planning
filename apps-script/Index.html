@@ -7,7 +7,7 @@
   <title>Nursing Workforce Calculator</title>
   <?!= include('Styles'); ?>
 </head>
-<body>
+<body class="simple">
   <header class="topbar">
     <div class="row">
       <div class="brand">
@@ -17,6 +17,7 @@
       <span class="pill" id="monthPill">—</span>
       <span class="pill" id="savePill">Loading…</span>
       <span class="spacer"></span>
+      <div class="seg dark" role="group" aria-label="View"><button type="button" data-act="mode" data-v="simple" class="on">Simple</button><button type="button" data-act="mode" data-v="full">Full</button></div>
       <button id="btnReset" type="button" class="ghost">Reset to Saved</button>
       <button id="btnSave" type="button" class="primary" disabled>Save</button>
     </div>

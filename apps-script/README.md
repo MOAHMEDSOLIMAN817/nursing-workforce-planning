@@ -75,6 +75,16 @@ Saved inputs are not overwritten. The `Audit_Log` records what was migrated.
 
 ## Use
 
+**Simple view (default).** The app opens in a simplified view. The **Simple / Full** switch at the top changes it, and the browser remembers your choice.
+- **Summary:** one headline answer (nurses needed), 4 cards (Required, Available, Shortage, Staff headcount) and a
+  "Needs data" list. Click a unit in the list to jump straight to it. The unit table is sorted by largest shortage.
+- **Inpatient / Other & OPD:** main inputs, nurses now, required FTE, gap and status. **▸** opens a short panel with
+  the unit's inputs, staff and hours, and its result, including exactly which data is missing.
+- **Settings:** 10 basic fields.
+- Everything else is in **Full view** (described below). Both views use the same data and calculations.
+
+**Full view:**
+
 - **Summary (executive dashboard):**
   - Six headline cards: Required FTE, Current RN FTE, CNC contribution,
     PCA/PCT contribution, Final planning shortage and Total headcount.
@@ -111,7 +121,7 @@ archive and delete actions all ask for confirmation.
 
 ```bash
 npm run test:gas   # 62 engine, server and Apps Script-compatibility tests (node:test); also run by `npm test`
-npm run test:ui    # browser end-to-end test (60 checks; needs Playwright/Chromium)
+npm run test:ui    # browser end-to-end test (71 checks; needs Playwright/Chromium)
 ```
 
 See `PROJECT_MEMORY.md` for calculation definitions and design decisions.
