@@ -1,0 +1,1076 @@
+<script>
+/* Scripts.html — browser UI. All numbers come from NwcCalc (Calculations.gs),
+ * the same engine the server uses to re-validate before saving.
+ * Values are rounded for display only. Gap sign: positive = shortage. */
+(function () {
+  'use strict';
+  var C = NwcCalc, S = C.STATUS;
+  var App = { saved: null, state: null, revision: 0, result: null, page: 'summary', open: {}, view: { INPATIENT: 'staff', OTHER: 'staff' }, dirty: false, saving: false, mode: 'simple', deleted: [] };
+  try { if (window.localStorage && localStorage.getItem('nwcMode') === 'full') App.mode = 'full'; } catch (e) { /* storage unavailable: keep default */ }
+  function simple() { return App.mode === 'simple'; }
+  var $ = function (id) { return document.getElementById(id); };
+  var DR = '<span class="dr">Data Required</span>';
+
+  // ---------------------------------------------------------------------------
+  // Formatting (display rounding only)
+  // ---------------------------------------------------------------------------
+  function esc(s) { return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function n2(n) { return Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function f2(n) { return n === null || n === undefined ? DR : n2(n); }
+  function f0(n) { return n === null || n === undefined ? DR : Math.round(n).toLocaleString('en-US'); }
+  function f1(n) { return n === null || n === undefined ? '—' : (Math.round(n * 10) / 10).toLocaleString('en-US'); }
+  function gap(n) {
+    if (n === null || n === undefined) return DR;
+    if (n > 0.005) return '<span class="gap short" title="Shortage: required exceeds credited FTE">▲ Shortage ' + n2(n) + '</span>';
+    if (n < -0.005) return '<span class="gap surplus" title="Surplus: credited exceeds required FTE">▼ Surplus ' + n2(-n) + '</span>';
+    return '<span class="gap bal">● Balanced</span>';
+  }
+  function money(n, cur) {
+    if (n === 'RATE') return '<span class="dr">Rate Required</span>';
+    return n === null || n === undefined ? DR : esc(cur || '') + ' ' + Math.round(n).toLocaleString('en-US');
+  }
+  function badge(st) {
+    var cls = { 'Coverage Met': 'st-met', 'Coverage Gap': 'st-gap', 'Data Required': 'st-data', 'Manual Override': 'st-ovr', 'Closed': 'st-closed' }[st] || 'st-closed';
+    return '<span class="st ' + cls + '">' + esc(st) + '</span>';
+  }
+  function fmtOut(v, kind) {
+    switch (kind) {
+      case 'fte': return f2(v);
+      case 'h': return f0(v);
+      case 'int': return v === null || v === undefined ? DR : String(v);
+      case 'gap': return gap(v);
+      case 'status': return badge(v);
+      case 'money': return money(v, App.result.costs.currency);
+      case 'fte0': return v ? n2(v) : '<span class="note">0.00</span>';
+      default: return esc(v);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // State helpers
+  // ---------------------------------------------------------------------------
+  function unit(id) { for (var i = 0; i < App.state.units.length; i++) if (App.state.units[i].id === id) return App.state.units[i]; return null; }
+  function res(id) { for (var i = 0; i < App.result.units.length; i++) if (App.result.units[i].id === id) return App.result.units[i]; return null; }
+  function activeUnits(section) {
+    return App.state.units.filter(function (u) { return !C.bool(u.archived) && (!section || u.section === section); })
+      .sort(function (a, b) { return (Number(a.sortOrder) || 0) - (Number(b.sortOrder) || 0); });
+  }
+  function getPath(o, path) { var p = path.split('.'); for (var i = 0; i < p.length; i++) { if (o === null || o === undefined) return undefined; o = o[p[i]]; } return o; }
+  function setPath(o, path, v) {
+    var p = path.split('.');
+    for (var i = 0; i < p.length - 1; i++) { if (o[p[i]] === null || typeof o[p[i]] !== 'object') o[p[i]] = /^\d+$/.test(p[i + 1]) ? [] : {}; o = o[p[i]]; }
+    o[p[p.length - 1]] = v;
+  }
+  function ensureParams(u) { u.params = u.params || {}; if (!u.params[u.method]) u.params[u.method] = C.blankParams(u.method); return u.params[u.method]; }
+  function newId(prefix) { return prefix + Date.now().toString(36).toUpperCase() + Math.floor(Math.random() * 1296).toString(36).toUpperCase(); }
+  function unitOptions() { return activeUnits().map(function (u) { return [u.id, u.name]; }); }
+  function optionTags(opts, v, blank) {
+    return (blank ? '<option value="">' + blank + '</option>' : '') + opts.map(function (o) { return '<option value="' + esc(o[0]) + '"' + (String(v) === String(o[0]) ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Recalculate + refresh
+  // ---------------------------------------------------------------------------
+  function recompute() {
+    App.result = C.calculate(App.state);
+    App.dirty = JSON.stringify(App.state) !== JSON.stringify(App.saved);
+    refreshChrome();
+  }
+
+  function refreshChrome() {
+    var r = App.result, sm = r.summary;
+    if (simple()) $('monthPill').textContent = r.month ? 'Month: ' + r.month.ym : 'Set the month in Settings';
+    else $('monthPill').textContent = (r.month ? r.month.ym + ' · ' + r.month.days + ' days · ' + r.month.fridays + ' Fridays' : 'Invalid month') +
+      ' · ' + (r.hours.hoursPerFTE ? r.hours.hoursPerFTE.toFixed(2) + ' h per FTE' : 'hours per FTE invalid');
+    var pill = $('savePill');
+    pill.textContent = App.saving ? 'Saving…' : App.dirty ? 'Unsaved changes' : 'All changes saved';
+    pill.className = 'pill' + (App.dirty ? ' dirty' : '');
+    $('btnSave').disabled = !App.dirty || App.saving;
+    var errs = r.issues.filter(function (x) { return x.level === 'error'; });
+    var html = '';
+    if (errs.length && simple()) html += '<div class="banner err"><b>Please fix:</b> ' + errs.slice(0, 3).map(function (x) { return esc(x.scope + ' — ' + x.message); }).join(' · ') + (errs.length > 3 ? ' · +' + (errs.length - 3) + ' more' : '') + '</div>';
+    else if (errs.length) html += '<div class="banner err"><b>' + errs.length + ' validation error(s) — saving is blocked until fixed.</b> ' +
+      errs.slice(0, 4).map(function (x) { return esc(x.scope + ': ' + x.message); }).join(' · ') + (errs.length > 4 ? ' · …see Settings → Data quality' : '') + '</div>';
+    if (sm.provisional && simple()) html += '<div class="banner warn">' + (sm.unitsDataRequired ? '<b>' + sm.unitsDataRequired + ' unit(s) still need data.</b> Results cover completed units only.' : '<b>Results are provisional.</b> Some units need confirmation.') + '</div>';
+    else if (sm.provisional) html += '<div class="banner warn"><b>' + esc(sm.totalsLabel) + '.</b> ' + esc(sm.provisionalReasons.slice(0, 5).join(' · ')) +
+      (sm.provisionalReasons.length > 5 ? ' · +' + (sm.provisionalReasons.length - 5) + ' more' : '') + '</div>';
+    $('banners').innerHTML = html;
+    Array.prototype.forEach.call(document.querySelectorAll('[data-act="mode"]'), function (b) { b.classList.toggle('on', b.getAttribute('data-v') === App.mode); });
+    document.body.classList.toggle('simple', simple());
+  }
+
+  /** Update calculated cells in place so the input being edited keeps focus. */
+  function refreshOutputs() {
+    var els = document.querySelectorAll('#page-' + App.page + ' [data-o]');
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i], parts = el.getAttribute('data-o').split('|'), v;
+      if (parts[0] === 'u') { var r = res(parts[1]); v = r ? r[parts[2]] : null; }
+      else if (parts[0] === 's') v = App.result.summary[parts[1]];
+      el.innerHTML = fmtOut(v, el.getAttribute('data-k'));
+    }
+    var regions = document.querySelectorAll('#page-' + App.page + ' [data-region]');
+    for (var j = 0; j < regions.length; j++) {
+      var fn = REGIONS[regions[j].getAttribute('data-region')];
+      if (fn) regions[j].innerHTML = fn(regions[j].getAttribute('data-arg'));
+    }
+    markInvalid();
+  }
+
+  function markInvalid() {
+    var errs = App.result.issues.filter(function (x) { return x.level === 'error'; });
+    Array.prototype.forEach.call(document.querySelectorAll('#page-' + App.page + ' [data-u][data-f]'), function (el) {
+      var key = el.getAttribute('data-f').split('.').pop(), id = el.getAttribute('data-u');
+      el.classList.toggle('bad', errs.some(function (x) { return x.unitId === id && x.field === key && x.scope !== 'Contributions'; }));
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('#page-' + App.page + ' [data-s]'), function (el) {
+      var k = el.getAttribute('data-s');
+      el.classList.toggle('bad', errs.some(function (x) { return x.scope === 'Settings' && x.field === k; }));
+    });
+  }
+
+  function renderAll() { renderPage(App.page); }
+  function renderPage(p) {
+    var fn = { summary: renderSummary, inpatient: function () { return renderUnits('INPATIENT'); }, other: function () { return renderUnits('OTHER'); }, settings: renderSettings }[p];
+    $('page-' + p).innerHTML = fn();
+    refreshOutputs();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Input builders
+  // ---------------------------------------------------------------------------
+  function uIn(u, path, cls, attrs) {
+    var v = getPath(u, path);
+    return '<input type="text" inputmode="decimal" class="' + (cls || '') + '" data-u="' + esc(u.id) + '" data-f="' + esc(path) + '" value="' + esc(v === undefined ? '' : v) + '"' + (attrs || '') + '>';
+  }
+  function uTxt(u, path, cls) {
+    var v = getPath(u, path);
+    return '<input type="text" class="' + (cls || '') + '" data-u="' + esc(u.id) + '" data-f="' + esc(path) + '" value="' + esc(v === undefined ? '' : v) + '">';
+  }
+  function uChk(u, path, rerender) {
+    var v = getPath(u, path);
+    return '<input type="checkbox" data-u="' + esc(u.id) + '" data-f="' + esc(path) + '" data-t="bool"' + (rerender ? ' data-rr="1"' : '') + (C.bool(v) || (v === undefined && path === 'isOpen') ? ' checked' : '') + '>';
+  }
+  function uSel(u, path, options, rerender) {
+    return '<select data-u="' + esc(u.id) + '" data-f="' + esc(path) + '"' + (rerender ? ' data-rr="1"' : '') + '>' + optionTags(options, getPath(u, path)) + '</select>';
+  }
+  function out(id, field, kind, cls) { return '<td class="' + (cls || '') + '" data-o="u|' + esc(id) + '|' + field + '" data-k="' + kind + '"></td>'; }
+  function field(u, f, prefix) {
+    var path = prefix + f.key;
+    if (f.type === 'bool') return '<label class="chk">' + uChk(u, path, false) + esc(f.label) + '</label>';
+    return '<label>' + esc(f.label) + uIn(u, path) + (f.help ? '<span class="help">' + esc(f.help) + '</span>' : '') + '</label>';
+  }
+  /** Leave & absence coverage — one global setting, shown wherever FTE is explained. */
+  function coverageControl(note) {
+    var hm = App.result.hours, st = App.state.settings;
+    var fv = C.isBlank(st.reliefFactor) || st.reliefFactor === undefined ? hm.reliefFactor : st.reliefFactor;
+    return '<div class="coverage"><label class="chk"><input type="checkbox" data-s="applyReliefFactor" data-t="bool" data-rr="1"' + (hm.applyReliefFactor ? ' checked' : '') + '> Include Leave &amp; Absence Coverage</label>' +
+      (hm.applyReliefFactor
+        ? '<label class="cf">Coverage / Relief Factor<input type="number" min="1" max="1.5" step="0.01" inputmode="decimal" data-s="reliefFactor" value="' + esc(fv) + '"></label>'
+        : '') +
+      '<span class="help">Optional coverage for annual leave, days off, sickness and unplanned absence.' + (note ? ' ' + note : '') + '</span></div>';
+  }
+  function coverageText(r) {
+    if (r.isOverride) return 'Not applied (manual override is the final FTE)';
+    return r.reliefFactorApplied ? 'Factor ' + r.reliefFactorApplied + ' · +' + n2(r.coverageAdditionFTE) + ' FTE' : 'Not applied';
+  }
+
+  function methodOptions(u) { return C.allowedMethods(u).map(function (m) { return [m, C.METHODS[m].label]; }); }
+  function typeOptions(section) { return Object.keys(C.UNIT_TYPES).filter(function (k) { return C.UNIT_TYPES[k].section === section; }).map(function (k) { return [k, C.UNIT_TYPES[k].label]; }); }
+
+  /** Key inputs: the method's main parameters as compact editable cells. */
+  function keyInputs(u) {
+    var def = C.METHODS[u.method], p = ensureParams(u);
+    if (!def) return '';
+    if (!def.key.length || u.method === 'ACUITY') {
+      var txt = u.method === 'ER' ? (p.periods || []).length + ' periods · ' + (p.workload || []).length + ' volume rows'
+        : u.method === 'ACUITY' ? (p.groups || []).length + ' patient groups' : '';
+      return '<div class="ki">' + (u.method === 'ACUITY' ? '<label>Beds' + uIn(u, 'params.ACUITY.beds') + '</label>' : '') +
+        '<span class="txt">' + esc(txt) + ' — <button type="button" class="link" data-act="toggle" data-id="' + esc(u.id) + '">edit in details</button></span></div>';
+    }
+    return '<div class="ki">' + def.key.map(function (k) {
+      var f = def.fields.filter(function (x) { return x.key === k; })[0];
+      return '<label>' + esc(f.short || f.label) + uIn(u, 'params.' + u.method + '.' + k) + '</label>';
+    }).join('') + '</div>';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Unit pages (Inpatient / Other & OPD)
+  // ---------------------------------------------------------------------------
+  function renderUnits(section) {
+    if (simple()) return renderUnitsSimple(section);
+    var units = activeUnits(section), view = App.view[section];
+    var h = '<div class="toolbar"><button type="button" class="primary" data-act="add-unit" data-sec="' + section + '">+ Add Unit</button>' +
+      '<div class="seg"><button type="button" data-act="view" data-sec="' + section + '" data-v="staff" class="' + (view === 'staff' ? 'on' : '') + '">Staffing</button>' +
+      '<button type="button" data-act="view" data-sec="' + section + '" data-v="ot" class="' + (view === 'ot' ? 'on' : '') + '">Estimated overtime</button></div>' +
+      '<span class="note">Gap = required − credited FTE. <span class="gap short">▲ Shortage</span> · <span class="gap surplus">▼ Surplus</span>. Open ▸ for advanced inputs.</span></div>';
+    var cols = view === 'staff'
+      ? ['<th class="l">Unit</th>', '<th class="l">Key inputs</th>', '<th>Required FTE</th>', '<th>Current RN FTE</th>', '<th>CNC contribution</th>', '<th>PCA/PCT contribution</th>', '<th>Remaining gap</th>', '<th class="c">Status</th>', '<th></th>']
+      : ['<th class="l">Unit</th>', '<th>Required hours</th>', '<th>Available qualified hours</th>', '<th>Uncovered hours</th>', '<th>OT-eligible RN</th>', '<th>Feasible OT hours</th>', '<th>Estimated OT cost</th>', '<th>Remaining recruitment FTE</th>', '<th></th>'];
+    h += '<div class="tablewrap"><table class="grid"><thead><tr>' + cols.join('') + '</tr></thead><tbody>';
+    units.forEach(function (u) {
+      var r = res(u.id) || {};
+      var open = !!App.open[u.id];
+      var cls = 'unit' + (open ? ' open' : '') + (r.isOpen === false ? ' closed' : '') + (r.counted === false ? ' excluded' : '');
+      var nameCell = '<td class="l name">' + uTxt(u, 'name', 'name') + '<span class="sub">' + esc(C.UNIT_TYPES[C.unitTypeOf(u)].label) + ' · ' + esc((C.METHODS[u.method] || {}).label || u.method) + (r.isOpen === false ? ' · closed' : '') + (r.counted === false ? ' · excluded' : '') + '</span></td>';
+      var exp = '<td><button type="button" class="expander" data-act="toggle" data-id="' + esc(u.id) + '" aria-expanded="' + open + '" title="Details">' + (open ? '▾' : '▸') + '</button></td>';
+      if (view === 'staff') {
+        h += '<tr class="' + cls + '" data-row="' + esc(u.id) + '">' + nameCell + '<td class="l">' + keyInputs(u) + '</td>' +
+          '<td data-region="req" data-arg="' + esc(u.id) + '"></td>' +
+          '<td>' + uIn(u, 'currentRNFTE', '', ' placeholder="' + esc((u.currentRNHeadcount || 0) + ' (= HC)') + '" title="Blank = equal to headcount"') + '</td>' +
+          out(u.id, 'cncFTE', 'fte0') + out(u.id, 'pcaFTE', 'fte0') + out(u.id, 'adjustedGap', 'gap') + out(u.id, 'status', 'status', 'c') + exp + '</tr>';
+      } else {
+        h += '<tr class="' + cls + '" data-row="' + esc(u.id) + '">' + nameCell + out(u.id, 'requiredHours', 'h') + out(u.id, 'availableQualifiedHours', 'h') + out(u.id, 'uncoveredHours', 'h') +
+          '<td>' + uIn(u, 'otEligibleHeadcount', '', ' placeholder="' + esc(eligPlaceholder(u)) + '" title="Blank = Settings default"') + '</td>' +
+          out(u.id, 'feasibleOT', 'h') + out(u.id, 'otCost', 'money') + out(u.id, 'remainingRecruitFTE', 'fte') + exp + '</tr>';
+      }
+      if (open) h += '<tr class="detail-row"><td class="detail-cell" colspan="9">' + renderDetail(u) + '</td></tr>';
+    });
+    h += '</tbody><tfoot data-region="totals" data-arg="' + section + '|' + view + '"></tfoot></table></div>';
+    h += view === 'staff'
+      ? '<p class="note">Remaining gap credits current RN FTE, qualified CNC direct care, confirmed transfers and approved PCA/PCT support tasks (planning scenario until approved). Status reflects qualified RN coverage only. "Coverage Met" means the entered planning assumptions are met — not a certification of clinical safety.</p>'
+      : '<p class="note"><b>Estimated overtime required</b> — not actual overtime worked or payroll payable. Uncovered hours use qualified RN/CNC coverage and confirmed transfers only; PCA/PCT hours never cover RN overtime gaps unless Settings says the approved workload model removes them.</p>';
+    return h;
+  }
+
+  function eligPlaceholder(u) {
+    var pct = C.num(App.state.settings.otEligiblePct);
+    return pct === null ? 'not set' : Math.floor((C.num(u.currentRNHeadcount) || 0) * pct / 100 + 1e-9) + ' (' + pct + '%)';
+  }
+
+  function reqRegion(id) {
+    var r = res(id); if (!r) return '';
+    if (r.requiredFTE === null) return DR;
+    if (simple()) return '<b>' + n2(r.requiredFTE) + '</b>';
+    var basis = (r.isOverride ? 'manual override' : r.basis === 'WHOLE_SHIFT' ? 'whole-shift basis' : 'average workload') + (r.reliefFactorApplied ? ' × ' + r.reliefFactorApplied : '');
+    return '<b>' + n2(r.requiredFTE) + '</b><span class="sub">' + basis + ' · est. ' + r.establishment + '</span>';
+  }
+
+  function totalsRow(arg) {
+    var parts = arg.split('|'), section = parts[0], view = parts[1];
+    var rs = App.result.units.filter(function (r) { return r.section === section && r.counted; });
+    var known = rs.filter(function (r) { return r.requiredFTE !== null; });
+    var dr = rs.length - known.length;
+    var s = function (list, k) { return list.reduce(function (a, r) { return a + (typeof r[k] === 'number' ? r[k] : 0); }, 0); };
+    var pos = function (list, k) { return list.reduce(function (a, r) { return a + Math.max(0, r[k] || 0); }, 0); };
+    var label = '<td class="l">TOTAL' + (dr ? ' <span class="tag">Completed units only — provisional</span><span class="sub">' + known.length + ' of ' + rs.length + ' units; ' + dr + ' Data Required excluded from both sides</span>' : '<span class="sub">' + rs.length + ' units</span>') + '</td>';
+    if (view === 'staff') {
+      return '<tr class="total">' + label + '<td></td><td>' + n2(s(known, 'requiredFTE')) + '</td><td>' + n2(s(known, 'currentFTE')) + '</td><td>' + n2(s(known, 'cncFTE')) + '</td><td>' + n2(s(known, 'pcaFTE')) + '</td>' +
+        '<td class="l"><span class="gap short">▲ Shortage ' + n2(pos(known, 'adjustedGap')) + '</span><span class="sub">surplus ' + n2(known.reduce(function (a, r) { return a + Math.max(0, -r.adjustedGap); }, 0)) + ' not offset</span></td><td></td><td></td></tr>';
+    }
+    var otMissing = known.some(function (r) { return r.feasibleOT === null; });
+    var cost = known.some(function (r) { return r.otCost === 'RATE'; }) ? 'RATE' : s(known, 'otCost');
+    return '<tr class="total">' + label + '<td>' + f0(s(known, 'requiredHours')) + '</td><td>' + f0(s(known, 'availableQualifiedHours')) + '</td><td>' + f0(s(known, 'uncoveredHours')) + '</td><td></td>' +
+      '<td>' + (otMissing ? DR : f0(s(known, 'feasibleOT'))) + '</td><td>' + (otMissing ? DR : money(cost, App.result.costs.currency)) + '</td><td>' + (otMissing ? DR : f2(s(known, 'remainingRecruitFTE'))) + '</td><td></td></tr>';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Detail panel (advanced inputs)
+  // ---------------------------------------------------------------------------
+  function renderDetail(u) {
+    if (simple()) return renderDetailSimple(u);
+    var def = C.METHODS[u.method] || { fields: [] }, p = ensureParams(u), pre = 'params.' + u.method + '.';
+    var others = App.state.units.filter(function (x) { return x.id !== u.id && !C.bool(x.archived); });
+    var h = '<div class="detail">';
+    // Workload
+    h += '<div class="card"><h3>Workload method <span class="hint">ID ' + esc(u.id) + '</span></h3><div class="form">' +
+      '<label>Unit type' + uSel(u, 'unitType', typeOptions(u.section), true) + '</label>' +
+      '<label>Method' + uSel(u, 'method', methodOptions(u), true) + '<span class="help">Only methods valid for this unit type. Switching keeps each method\'s own inputs; nothing is carried over.</span></label></div>';
+    var fields = def.fields.filter(function (f) { return def.key.indexOf(f.key) < 0; });
+    if (fields.length) h += '<div class="form" style="margin-top:10px">' + fields.map(function (f) { return field(u, f, pre); }).join('') + '</div>';
+    if (u.method === 'ACUITY') h += '<div class="form" style="margin-top:10px">' + field(u, def.fields[0], pre) + '</div>';
+    Object.keys(def.tables || {}).forEach(function (tk) {
+      var t = def.tables[tk], rows = p[tk] || [];
+      h += '<h3>' + esc(t.label) + '</h3><div class="tablewrap"><table class="grid compact"><thead><tr>' +
+        t.columns.map(function (c) { return '<th' + (c.type === 'text' ? ' class="l"' : '') + '>' + esc(c.label) + '</th>'; }).join('') + '<th></th></tr></thead><tbody>';
+      rows.forEach(function (row, i) {
+        h += '<tr>' + t.columns.map(function (c) {
+          var path = pre + tk + '.' + i + '.' + c.key;
+          return '<td' + (c.type === 'text' ? ' class="l"' : '') + '>' + (c.type === 'text' ? uTxt(u, path, 'name') : uIn(u, path)) + '</td>';
+        }).join('') + '<td><button type="button" class="link" data-act="del-row" data-id="' + esc(u.id) + '" data-tk="' + tk + '" data-i="' + i + '">remove</button></td></tr>';
+      });
+      h += '</tbody></table></div><div class="toolbar"><button type="button" class="small" data-act="add-row" data-id="' + esc(u.id) + '" data-tk="' + tk + '">+ Add row</button></div>';
+    });
+    if (u.method === 'ACUITY') h += '<p class="note">Each patient belongs to exactly one group; the sum of group patients cannot exceed operational beds.</p>';
+    if (u.method === 'CSSD') h += '<div data-region="tech" data-arg="' + esc(u.id) + '"></div>';
+    h += '</div>';
+    // Schedule
+    if (u.method !== 'ER') {
+      var days = C.NON_FRIDAY_DAYS, openD = String((u.schedule || {}).openDays || '').split(/[\s,]+/);
+      h += '<div class="card"><h3>Schedule &amp; minimum coverage</h3><div class="form"><label style="grid-column:1/-1">Regular open days (Friday set separately)<span class="days">' + days.map(function (d) {
+        return '<label class="chk"><input type="checkbox" data-days="' + esc(u.id) + '" value="' + d + '"' + (openD.indexOf(d) >= 0 ? ' checked' : '') + '>' + d + '</label>';
+      }).join('') + '</span></label>' +
+        '<label>Hours per regular open day' + uIn(u, 'schedule.weekdayHours') + '</label>' +
+        '<label>Friday hours (0 = closed)' + uIn(u, 'schedule.fridayHours') + '</label>' +
+        '<label>Public holiday hours' + uIn(u, 'schedule.holidayHours') + '</label>' +
+        '<label>' + (u.section === 'INPATIENT' ? 'Minimum RN per shift' : 'Minimum RN during opening hours') + uIn(u, 'minRNPerShift') + '<span class="help">Unit-specific planning assumption. Blank = Data Required.</span></label>' +
+        '<label class="chk">' + uChk(u, 'isOpen', true) + 'Unit open (closed units generate no requirement)</label></div></div>';
+    } else {
+      h += '<div class="card"><h3>Minimum coverage</h3><p class="note">ER minimum RN is set per time period in the workload tables.</p><div class="form"><label class="chk">' + uChk(u, 'isOpen', true) + 'Unit open</label></div></div>';
+    }
+    // Requirement basis
+    h += '<div class="card"><h3>Required FTE basis</h3><div data-region="basis" data-arg="' + esc(u.id) + '"></div>' + coverageControl('Applies to all units.') +
+      '<div class="form" style="margin-top:10px"><label>Manual required-FTE override' + uIn(u, 'manualOverrideFTE') + '<span class="help">Only when reliable workload data is unavailable.</span></label>' +
+      '<label>Override reason (mandatory)' + uTxt(u, 'manualOverrideReason') + '</label></div></div>';
+    // Staffing & overtime
+    h += '<div class="card"><h3>Staffing &amp; overtime eligibility</h3><div class="form">' +
+      '<label>Current RN headcount' + uIn(u, 'currentRNHeadcount') + '</label>' +
+      '<label>Current RN FTE' + uIn(u, 'currentRNFTE', '', ' placeholder="blank = headcount"') + '<span class="help">Qualified RNs only. Do not include CNC or PCA/PCT here.</span></label>' +
+      '<label>Overtime-eligible RN headcount' + uIn(u, 'otEligibleHeadcount', '', ' placeholder="' + esc(eligPlaceholder(u)) + '"') + '<span class="help">Overrides the Settings eligibility % for this unit.</span></label></div></div>';
+    // Contributions allocated here
+    h += '<div class="card wide"><h3>CNC &amp; PCA/PCT allocated to this unit <span class="hint">edits here and on Settings are the same records</span></h3>' + allocationTable(u.id) +
+      '<div class="toolbar"><button type="button" class="small" data-act="add-ct" data-cat="CNC" data-id="' + esc(u.id) + '">+ CNC allocation</button>' +
+      '<button type="button" class="small" data-act="add-ct" data-cat="PCA" data-id="' + esc(u.id) + '">+ PCA/PCT allocation</button></div></div>';
+    // Relation & notes
+    h += '<div class="card"><h3>Separate beds, subset or duplicate?</h3><div class="form">' +
+      '<label>Relationship' + uSel(u, 'relation.type', [['', 'None'], ['SUBSET_OF', 'Subset of…'], ['POSSIBLE_DUPLICATE_OF', 'Possible duplicate of…']], true) + '</label>';
+    if (u.relation && u.relation.type) {
+      h += '<label>Related unit<select data-u="' + esc(u.id) + '" data-f="relation.unitId" data-rr="1">' + optionTags(others.map(function (x) { return [x.id, x.name]; }), u.relation.unitId, '— select —') + '</select></label>' +
+        '<label>Resolution' + uSel(u, 'relation.resolution', [['UNRESOLVED', 'Unresolved (count, provisional)'], ['SEPARATE', 'Confirmed separate (count)'], ['EXCLUDE', 'Confirmed subset/duplicate (exclude)']], true) + '</label>';
+    }
+    h += '<label style="grid-column:1/-1">Notes<textarea data-u="' + esc(u.id) + '" data-f="notes">' + esc(u.notes || '') + '</textarea></label></div></div>';
+    // Calculation
+    h += '<div class="card wide"><h3>Calculation</h3><div data-region="calc" data-arg="' + esc(u.id) + '"></div>' +
+      '<div class="toolbar"><button type="button" class="danger small" data-act="archive" data-id="' + esc(u.id) + '">Archive Unit</button></div></div>';
+    return h + '</div>';
+  }
+
+  function basisRegion(id) {
+    var r = res(id); if (!r) return '';
+    if (r.avgFTE === null) return '<p class="note">' + (r.isOverride ? 'Manual override in use; method data incomplete.' : 'Data Required — ' + esc(r.missing.join('; '))) + '</p>';
+    var drives = r.isOverride ? 'OVERRIDE' : r.basis;
+    var opt = function (key, label, v, sub) {
+      return '<div class="opt' + (drives === key ? ' on' : '') + '"><div class="note">' + label + (drives === key ? ' <span class="tag teal">drives requirement</span>' : '') + '</div><div class="v">' + n2(v) + ' FTE</div><div class="note">' + sub + '</div></div>';
+    };
+    return '<div class="basis">' + opt('AVERAGE', 'Average workload', r.avgFTE, 'fractional average RN coverage') +
+      opt('WHOLE_SHIFT', 'Whole-shift staffing', r.shiftFTE, (r.shiftRN !== null ? r.shiftRN + ' whole RN per shift' : 'whole nurses each period') + (r.shiftCensusAssumed ? ' (census assumed)' : '')) + '</div>' +
+      (r.isOverride ? '<p class="note"><span class="tag">Manual override drives requirement: ' + n2(r.requiredFTE) + ' FTE</span></p>'
+        : '<p class="note">Values above are Base FTE. Final required FTE = ' + n2(r.baseRequiredFTE) + (r.reliefFactorApplied ? ' × ' + r.reliefFactorApplied + ' = <b>' + n2(r.requiredFTE) + '</b>' : ' (coverage not applied)') + '. Change the basis for all units in Settings.</p>');
+  }
+
+  function calcRegion(id) {
+    var r = res(id); if (!r) return '';
+    var h = '';
+    if (r.missing.length) h += '<div class="banner warn" style="margin:0 0 8px">Data Required: ' + esc(r.missing.join('; ')) + '</div>';
+    h += '<ul class="lines">' + r.lines.map(function (l) { return '<li>' + esc(l) + '</li>'; }).join('') + '</ul>';
+    if (r.requiredFTE !== null) {
+      var hpf = App.result.hours.hoursPerFTE;
+      h += '<ul class="lines"><li>Base required FTE = ' + (r.isOverride ? 'manual override ' + n2(r.baseRequiredFTE) : f0(r.coverageHours) + ' h ÷ ' + hpf.toFixed(2) + ' available h per FTE = ' + n2(r.baseRequiredFTE)) + '</li>' +
+        '<li>Coverage adjustment: ' + esc(coverageText(r)) + '</li>' +
+        '<li>Final required FTE = <b>' + n2(r.requiredFTE) + '</b> (establishment ' + r.establishment + ')</li>' +
+        '<li>RN coverage gap = required ' + n2(r.requiredFTE) + ' − (RN ' + n2(r.currentFTE) + ' + CNC ' + n2(r.cncFTE) + ' + transfers in ' + n2(r.transferIn) + ' − out ' + n2(r.transferOut) + ') = ' + gap(r.rnGap) + '</li>' +
+        '<li>Remaining (adjusted) gap = RN gap − PCA/PCT ' + n2(r.pcaFTE) + ' = ' + gap(r.adjustedGap) + (App.result.summary.scenarioApproved ? '' : ' <span class="tag">Planning scenario</span>') + '</li>' +
+        '<li>Estimated overtime required: uncovered ' + f0(r.uncoveredHours) + ' h; capacity ' + (r.otCapacity === null ? 'eligibility not set' : f0(r.otCapacity) + ' h (' + r.otEligibleHC + ' RN × max, ' + esc(r.otEligibleSource) + ')') +
+        '; feasible ' + f0(r.feasibleOT) + ' h; remaining recruitment ' + f2(r.remainingRecruitFTE) + ' FTE</li></ul>';
+    }
+    if (r.notes.length) h += '<ul class="lines note">' + r.notes.map(function (n) { return '<li>' + esc(n) + '</li>'; }).join('') + '</ul>';
+    return h;
+  }
+
+  function techRegion(id) {
+    var r = res(id); if (!r || !r.technicians) return '';
+    var t = r.technicians;
+    return '<div class="explain"><b>CSSD technicians (not RN):</b> required ' + (t.requiredFTE === null ? DR + ' (sets and minutes per set)' : n2(t.requiredFTE) + ' FTE') +
+      ' · current ' + (t.currentHC === null ? '—' : t.currentHC) + ' headcount.</div>';
+  }
+
+  /** Allocation rows (all, or only those for one unit). Bound by array index. */
+  function allocationTable(unitId) {
+    var rows = App.state.contributions.map(function (c, i) { return { c: c, i: i }; }).filter(function (x) { return !unitId || x.c.unitId === unitId; });
+    var s = App.state.settings;
+    var h = '<div class="tablewrap"><table class="grid compact"><thead><tr><th class="l">Category</th><th class="l">Employee / group ref</th>' + (unitId ? '' : '<th class="l">Unit</th>') +
+      '<th>Allocated FTE</th><th>Contribution %</th><th class="c">Qualified / approved</th><th class="c">Already in RN FTE</th><th class="l">Notes</th><th class="l">Credited</th><th></th></tr></thead><tbody>';
+    rows.forEach(function (x) {
+      var c = x.c, i = x.i, def = c.category === 'PCA' ? s.pcaSubstitutionPct : s.cncDirectCarePct;
+      h += '<tr><td class="l"><select data-ct="' + i + '" data-f="category" data-rr="1">' + optionTags([['CNC', 'CNC'], ['PCA', 'PCA/PCT']], c.category) + '</select></td>' +
+        '<td class="l"><input type="text" class="name" data-ct="' + i + '" data-f="staffRef" value="' + esc(c.staffRef) + '" placeholder="optional; required to detect duplicates"></td>' +
+        (unitId ? '' : '<td class="l"><select data-ct="' + i + '" data-f="unitId">' + optionTags(unitOptions(), c.unitId, '— select —') + '</select></td>') +
+        '<td><input type="text" inputmode="decimal" data-ct="' + i + '" data-f="allocatedFTE" value="' + esc(c.allocatedFTE) + '"></td>' +
+        '<td><input type="text" inputmode="decimal" data-ct="' + i + '" data-f="contributionPct" value="' + esc(c.contributionPct) + '" placeholder="' + esc(def) + ' (default)"></td>' +
+        '<td class="c"><input type="checkbox" data-ct="' + i + '" data-f="approved" data-t="bool"' + (c.approved ? ' checked' : '') + ' title="' + (c.category === 'PCA' ? 'Support tasks locally approved' : 'Qualified for direct care') + '"></td>' +
+        '<td class="c"><input type="checkbox" data-ct="' + i + '" data-f="countedInRNFTE" data-t="bool"' + (c.countedInRNFTE ? ' checked' : '') + '></td>' +
+        '<td class="l"><input type="text" class="name" data-ct="' + i + '" data-f="notes" value="' + esc(c.notes) + '"></td>' +
+        '<td class="l" data-region="ct" data-arg="' + i + '"></td><td><button type="button" class="link" data-act="del-ct" data-i="' + i + '">delete</button></td></tr>';
+    });
+    if (!rows.length) h += '<tr><td class="l note" colspan="10">No allocations. Unallocated CNC/PCA capacity is never credited to any unit.</td></tr>';
+    return h + '</tbody></table></div>';
+  }
+
+  function ctRegion(i) {
+    var c = App.result.contributions[Number(i)]; if (!c) return '';
+    return c.eligible ? '<span class="st st-met">' + n2(c.creditedFTE) + ' FTE</span><span class="sub">' + n2(c.allocatedFTE) + ' × ' + f1(c.pctUsed) + '%' + (c.pctFromDefault ? ' (default)' : '') + '</span>'
+      : '<span class="st st-data">Not credited</span><span class="sub">' + esc(c.reasons.join('; ')) + '</span>';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Summary (executive dashboard)
+  // ---------------------------------------------------------------------------
+  function renderSummary() {
+    if (simple()) return renderSummarySimple();
+    var h = '<div data-region="scenario"></div><div data-region="kpis"></div>';
+    h += '<h2>How the final gap is built <span class="hint">sum of per-unit shortages after each credit — surpluses in one unit never offset another</span></h2><div class="card" data-region="waterfall"></div>';
+    h += '<h2>Estimated overtime required <span class="hint">not actual overtime worked or payroll payable</span></h2><div data-region="otcards"></div>';
+    h += '<h2>Units</h2><div class="tablewrap" data-region="unitsTable"></div>';
+    h += '<h2>Transfers <span class="hint">counted only when competency and coverage are confirmed and the source is not left short</span></h2>';
+    h += '<div class="tablewrap"><table class="grid"><thead><tr><th class="l">Source unit</th><th class="l">Destination unit</th><th>FTE</th><th class="c">Competency confirmed</th><th class="c">Coverage compatible</th><th class="l">Notes</th><th class="l">Counted?</th><th></th></tr></thead><tbody>';
+    var opts = unitOptions();
+    App.state.transfers.forEach(function (t, i) {
+      var sel = function (f) { return '<select data-tr="' + i + '" data-f="' + f + '">' + optionTags(opts, t[f], '— select —') + '</select>'; };
+      h += '<tr><td class="l">' + sel('sourceUnitId') + '</td><td class="l">' + sel('destUnitId') + '</td>' +
+        '<td><input type="text" inputmode="decimal" data-tr="' + i + '" data-f="fte" value="' + esc(t.fte) + '"></td>' +
+        '<td class="c"><input type="checkbox" data-tr="' + i + '" data-f="competencyConfirmed" data-t="bool"' + (t.competencyConfirmed ? ' checked' : '') + '></td>' +
+        '<td class="c"><input type="checkbox" data-tr="' + i + '" data-f="coverageCompatible" data-t="bool"' + (t.coverageCompatible ? ' checked' : '') + '></td>' +
+        '<td class="l"><input type="text" class="name" data-tr="' + i + '" data-f="notes" value="' + esc(t.notes) + '"></td>' +
+        '<td class="l" data-region="transfer" data-arg="' + i + '"></td>' +
+        '<td><button type="button" class="link" data-act="del-transfer" data-i="' + i + '">delete</button></td></tr>';
+    });
+    if (!App.state.transfers.length) h += '<tr><td class="l note" colspan="8">No transfers recorded.</td></tr>';
+    h += '</tbody></table></div><div class="toolbar"><button type="button" class="small" data-act="add-transfer">+ Add transfer</button></div>';
+    h += '<h2>Cost options</h2><div data-region="costs"></div>';
+    h += '<h2>Reconciliation checks</h2><div data-region="checks"></div>';
+    h += '<h2>Method</h2><div class="explain">Available hours per FTE = scheduled − leave − training − other unavailable (or scheduled ÷ (1 + uplift); never both). ' +
+      'Gap = required − credited FTE (positive = shortage). RN coverage gap credits current RN FTE, qualified CNC direct-care FTE and confirmed transfers. ' +
+      'The adjusted workforce planning gap also credits locally approved PCA/PCT support-task substitution — a PCA/PCT is never treated as a qualified RN. ' +
+      'Gaps are calculated per unit before aggregation; totals compare required and available FTE over exactly the same completed units. ' +
+      'All defaults are planning assumptions requiring local approval; results do not certify clinical safety.</div>';
+    return h;
+  }
+
+  function scenarioRegion() {
+    var sm = App.result.summary;
+    return sm.scenarioApproved ? '' : '<div class="banner info" style="margin:0 0 14px"><b>Planning scenario.</b> CNC and PCA/PCT contribution assumptions are not yet approved (Settings → Support staff &amp; contributions). The final planning gap is a scenario; the RN coverage gap relies on qualified coverage only.</div>';
+  }
+
+  function kpi(k, v, s, cls, tag) {
+    return '<div class="card kpi ' + (cls || '') + '"><div class="k">' + k + '</div><div class="v">' + v + '</div><div class="s">' + (s || '') + '</div>' + (tag ? '<div class="t">' + tag + '</div>' : '') + '</div>';
+  }
+
+  function kpisRegion() {
+    var sm = App.result.summary;
+    var prov = sm.unitsDataRequired ? '<span class="tag">Completed units only — provisional</span>' : '';
+    var scen = sm.scenarioApproved ? '<span class="tag teal">Assumptions approved</span>' : '<span class="tag">Planning scenario</span>';
+    var basis = sm.basis === 'WHOLE_SHIFT' ? 'whole-shift staffing basis' : 'average-workload basis';
+    return '<div class="kpis">' +
+      kpi('Required FTE', n2(sm.requiredFTE), sm.completedUnits + ' of ' + sm.unitsCounted + ' units · ' + basis + ' · ' + (sm.applyReliefFactor ? 'incl. leave coverage × ' + sm.reliefFactor + ' (+' + n2(sm.coverageAdditionFTE) + ')' : 'leave coverage not applied') + ' · establishment ' + sm.establishment, 'accent', prov) +
+      kpi('Current RN FTE', n2(sm.currentRNFTE), 'same ' + sm.completedUnits + ' units · all units ' + n2(sm.currentRNFTEAllUnits) + ' FTE / ' + sm.currentRNHC + ' headcount', 'accent', prov) +
+      kpi('CNC contribution', n2(sm.cncCreditedFTE) + '<small>FTE</small>', 'credited qualified direct care · headcount ' + sm.cncHC + ' · ' + n2(sm.cncAvailableFTE) + ' FTE available · ' + n2(sm.cncAllocatedFTE) + ' allocated', 'accent') +
+      kpi('PCA/PCT contribution', n2(sm.pcaCreditedFTE) + '<small>FTE</small>', 'credited approved support tasks · headcount ' + sm.pcaHC + ' · ' + n2(sm.pcaAvailableFTE) + ' FTE available · ' + n2(sm.pcaAllocatedFTE) + ' allocated', 'accent', scen) +
+      kpi('Final planning shortage', (sm.finalShortageFTE > 0.005 ? '▲ ' : '') + n2(sm.finalShortageFTE) + '<small>FTE</small>',
+        sm.shortageUnits + ' unit(s) short · RN coverage shortage ' + n2(sm.rnShortageFTE) + ' · surplus ▼ ' + n2(sm.finalSurplusFTE) + ' in other units (not offset)', sm.finalShortageFTE > 0.005 ? 'short' : 'surplus', scen + ' ' + prov) +
+      kpi('Total headcount', sm.totalHC.toLocaleString('en-US'), 'RN ' + sm.currentRNHC + ' · CNC ' + sm.cncHC + ' · PCA/PCT ' + sm.pcaHC + ' (headcount, not credited FTE)') +
+      '</div><div class="kpis small" style="margin-top:14px">' +
+      kpi('RN coverage gap', gap(sm.rnShortageFTE), 'qualified RN + CNC + transfers; surplus ▼ ' + n2(sm.rnSurplusFTE) + ' elsewhere', sm.rnShortageFTE > 0.005 ? 'short' : '') +
+      kpi('Confirmed transfers', n2(sm.transferFTE) + '<small>FTE</small>', sm.invalidTransfers ? sm.invalidTransfers + ' transfer(s) not counted' : 'eligible and compatible only') +
+      kpi('Data completeness', sm.completenessPct + '%', esc(sm.dataStatus), sm.unitsDataRequired ? 'dr' : '') +
+      '</div>';
+  }
+
+  function otCardsRegion() {
+    var sm = App.result.summary, cur = App.result.costs.currency;
+    var miss = sm.otDataMissingUnits ? 'eligibility not set for ' + sm.otDataMissingUnits + ' unit(s) — Settings or unit override' : '';
+    return '<div class="kpis">' +
+      kpi('Uncovered hours', f0(sm.uncoveredHours), 'required − available qualified coverage hours (completed units)', sm.uncoveredHours > 0 ? 'short' : '') +
+      kpi('Feasible overtime hours', sm.feasibleOTHours === null ? DR : f0(sm.feasibleOTHours), miss || 'eligible RN × max ' + esc(App.state.settings.otMaxHoursPerRN) + ' h (configurable assumption)', sm.feasibleOTHours === null ? 'dr' : '') +
+      kpi('Estimated OT cost', sm.otCost === null ? DR : money(sm.otCost, cur), sm.otCost === 'RATE' ? 'enter overtime cost per hour in Settings' : 'feasible hours × hourly rate', sm.otCost === null || sm.otCost === 'RATE' ? 'dr' : '') +
+      kpi('Remaining recruitment FTE', sm.remainingRecruitFTE === null ? DR : n2(sm.remainingRecruitFTE), sm.remainingUncoveredHours === null ? miss : f0(sm.remainingUncoveredHours) + ' h left after feasible OT ÷ ' + App.result.hours.productiveHoursPerFTE.toFixed(2) + ' productive h/FTE', sm.remainingRecruitFTE > 0.005 ? 'short' : '') +
+      '</div>';
+  }
+
+  function waterfallRegion() {
+    var w = App.result.summary.waterfall;
+    var max = Math.max(w[0].value, w[3].value, w[5].value, 0.01);
+    var pct = function (v) { return (v / max * 100).toFixed(3) + '%'; };
+    var running = 0, h = '<div class="wf">';
+    w.forEach(function (st) {
+      var bar, val, tip;
+      if (st.key === 'gross' || st.subtotal) {
+        running = st.value;
+        var cls = st.key === 'gross' ? 'gross' : 'red';
+        bar = st.value > 1e-9 ? '<div class="bar ' + cls + '" style="left:0;width:' + pct(st.value) + '"></div>' : '<div class="bar zero" style="left:0"></div>';
+        val = '<b>' + n2(st.value) + ' FTE</b> shortage';
+        tip = st.label + ': ' + n2(st.value) + ' FTE (sum of unit shortages at this step)';
+      } else {
+        var from = running + st.value;   // st.value ≤ 0 (reduction)
+        bar = st.value < -1e-9 ? '<div class="bar teal" style="left:' + pct(from) + ';width:' + pct(-st.value) + '"></div>' : '<div class="bar zero" style="left:' + pct(running) + '"></div>';
+        val = st.value < -1e-9 ? '− ' + n2(-st.value) + ' FTE' : '0.00 — none credited';
+        tip = st.label + ' reduces unit shortages by ' + n2(-st.value) + ' FTE';
+        running = from;
+      }
+      h += '<div class="lbl' + (st.subtotal ? ' sub' : '') + '">' + esc(st.label) + (st.key === 'pca' && !App.result.summary.scenarioApproved ? ' <span class="tag">scenario</span>' : '') + '</div>' +
+        '<div class="track" data-tip="' + esc(tip) + '" role="img" aria-label="' + esc(tip) + '">' + bar + '</div><div class="val' + (st.subtotal ? ' sub' : '') + '">' + val + '</div>';
+    });
+    h += '</div><div class="wf-foot note"><span class="tag navy">■ indigo</span> gross shortage · <span class="tag teal">■ teal</span> credit applied · <span class="gap short">■ red</span> remaining shortage. ' +
+      'Surplus not offset: ▼ ' + n2(App.result.summary.finalSurplusFTE) + ' FTE.</div>';
+    h += '<details class="tv"><summary>Show as table</summary><table class="grid compact" style="margin-top:8px"><thead><tr><th class="l">Step</th><th>FTE</th></tr></thead><tbody>' +
+      w.map(function (st) { return '<tr><td class="l">' + esc(st.label) + '</td><td>' + (st.subtotal || st.key === 'gross' ? n2(st.value) : (st.value < 0 ? '− ' + n2(-st.value) : '0.00')) + '</td></tr>'; }).join('') + '</tbody></table></details>';
+    return h;
+  }
+
+  function unitsTableRegion() {
+    var h = '<table class="grid"><thead><tr><th class="l">Unit</th><th class="l">Key inputs</th><th>Required FTE</th><th>Current RN FTE</th><th>CNC contribution</th><th>PCA/PCT contribution</th><th>Remaining gap</th><th class="c">Status</th></tr></thead><tbody>';
+    App.result.units.forEach(function (r) {
+      var u = unit(r.id), p = (u.params || {})[u.method] || {}, def = C.METHODS[u.method];
+      var ki = def ? def.key.map(function (k) { var f = def.fields.filter(function (x) { return x.key === k; })[0]; return (f.short || f.label) + ' ' + (C.isBlank(p[k]) ? '?' : p[k]); }).join(' · ') : '';
+      h += '<tr class="unit' + (r.counted ? '' : ' excluded') + '"><td class="l name"><b>' + esc(r.name) + '</b><span class="sub">' + esc(C.UNIT_TYPES[r.unitType].label) + '</span></td>' +
+        '<td class="l note">' + esc(ki || r.methodLabel) + '</td><td>' + f2(r.requiredFTE) + '</td><td>' + n2(r.currentFTE) + '</td><td>' + fmtOut(r.cncFTE, 'fte0') + '</td><td>' + fmtOut(r.pcaFTE, 'fte0') + '</td>' +
+        '<td>' + gap(r.adjustedGap) + '</td><td class="c">' + badge(r.status) + '</td></tr>';
+    });
+    var sm = App.result.summary;
+    h += '<tr class="total"><td class="l">TOTAL' + (sm.unitsDataRequired ? ' <span class="tag">Completed units only — provisional</span>' : '') + '</td><td></td><td>' + n2(sm.requiredFTE) + '</td><td>' + n2(sm.currentRNFTE) + '</td><td>' + n2(sm.cncCreditedFTE) + '</td><td>' + n2(sm.pcaCreditedFTE) + '</td>' +
+      '<td class="l"><span class="gap short">▲ ' + n2(sm.finalShortageFTE) + '</span><span class="sub">▼ ' + n2(sm.finalSurplusFTE) + ' surplus not offset</span></td><td></td></tr>';
+    if (sm.currentFTEInDataRequiredUnits) h += '<tr><td class="l note" colspan="8">Excluded from both required and available: ' + n2(sm.currentFTEInDataRequiredUnits) + ' current RN FTE in ' + sm.unitsDataRequired + ' Data Required unit(s).</td></tr>';
+    return h + '</tbody></table>';
+  }
+
+  function transferRegion(i) {
+    var t = App.result.transfers[Number(i)];
+    if (!t) return '';
+    var notes = t.reasons.filter(function (x) { return x.indexOf('Note:') === 0; });
+    return t.valid ? '<span class="st st-met">Counted</span> <span class="note">' + esc(notes.join(' ')) + '</span>'
+      : '<span class="st st-gap">Not counted</span> <span class="note">' + esc(t.reasons.join('; ')) + '</span>';
+  }
+
+  function costsRegion() {
+    var c = App.result.costs;
+    var h = '<div class="tablewrap"><table class="grid"><thead><tr><th class="l">Option</th><th>Quantity</th><th class="l">Unit</th><th>Monthly cost</th><th>One-off cost</th><th>Cost per covered hour</th><th class="l">Notes</th></tr></thead><tbody>';
+    c.options.forEach(function (o, idx) {
+      var isT = idx === 0;
+      h += '<tr><td class="l">' + esc(o.option) + '</td><td>' + (o.quantity === null ? DR : o.unit === 'FTE' ? n2(o.quantity) : f0(o.quantity)) + '</td><td class="l">' + o.unit + '</td>' +
+        '<td>' + (isT ? 'No additional payroll' : o.monthlyCost === null && idx === 1 && App.result.summary.otCost === 'RATE' ? '<span class="dr">Rate Required</span>' : o.monthlyCost === null ? '<span class="dr">Cost Data Required</span>' : money(o.monthlyCost, c.currency)) + '</td>' +
+        '<td>' + (isT ? (o.oneOffCost === null ? '<span class="dr">Cost Data Required</span>' : money(o.oneOffCost, c.currency)) : '—') + '</td>' +
+        '<td>' + (isT ? '—' : o.costPerHour === null ? '<span class="dr">Cost Data Required</span>' : money(o.costPerHour, c.currency)) + '</td><td class="l note" style="white-space:normal">' + esc(o.note) + '</td></tr>';
+    });
+    h += '</tbody></table></div><p class="note">Do not reduce staffing below approved coverage or competency requirements.</p>';
+    return h;
+  }
+
+  function checksRegion() {
+    return '<div class="tablewrap"><table class="grid compact"><thead><tr><th class="l">Check</th><th>Calculated</th><th>Reported</th><th class="c">Status</th></tr></thead><tbody>' +
+      App.result.checks.map(function (c) { return '<tr><td class="l">' + esc(c.label) + '</td><td>' + n2(c.calculated) + '</td><td>' + n2(c.reported) + '</td><td class="c">' + (c.ok ? '<span class="st st-met">OK</span>' : '<span class="st st-gap">ERROR</span>') + '</td></tr>'; }).join('') +
+      '</tbody></table></div>';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Settings
+  // ---------------------------------------------------------------------------
+  function renderSettings() {
+    if (simple()) return renderSettingsSimple();
+    var s = App.state.settings, groups = {};
+    C.SETTINGS_FIELDS.forEach(function (f) { if (!f.legacy) (groups[f.group] = groups[f.group] || []).push(f); });
+    var h = '<div class="banner info" style="margin:0 0 16px">All values are planning assumptions requiring local approval. Imported ratios are not mandatory clinical standards.</div><div class="settings-grid">';
+    Object.keys(groups).forEach(function (g) {
+      h += '<div class="card"><h3>' + esc(g) + '</h3><div class="form">';
+      groups[g].forEach(function (f) {
+        var v = s[f.key] === undefined ? '' : s[f.key];
+        if (f.key === 'applyReliefFactor') { h += '<div style="grid-column:1/-1">' + coverageControl() + '</div>'; return; }
+        if (f.key === 'reliefFactor') return;
+        if (f.type === 'enum') {
+          var labels = { AVERAGE: 'Average workload', WHOLE_SHIFT: 'Whole-shift staffing', NO: 'No', YES: 'Yes' };
+          h += '<label' + (f.key.indexOf('pca') === 0 || f.key === 'requirementBasis' ? ' style="grid-column:1/-1"' : '') + '>' + esc(f.label) + '<select data-s="' + f.key + '" data-rr="1">' + optionTags(f.options.map(function (o) { return [o, labels[o] || o]; }), v) + '</select>' + (f.help ? '<span class="help">' + esc(f.help) + '</span>' : '') + '</label>';
+          return;
+        }
+        var type = f.type === 'month' ? 'month' : 'text';
+        h += '<label>' + esc(f.label) + '<input type="' + type + '"' + (f.type === 'number' ? ' inputmode="decimal"' : '') + ' data-s="' + f.key + '" value="' + esc(v) + '"' + (f.type === 'month' ? ' data-rr="1"' : '') + '>' +
+          (f.help ? '<span class="help">' + esc(f.help) + '</span>' : '') + '</label>';
+      });
+      h += '</div>';
+      if (g === 'Leave & absence coverage') h += '<div data-region="hours" style="margin-top:10px"></div>';
+      if (g === 'Support staff & contributions') h += '<div data-region="pools" style="margin-top:10px"></div>';
+      h += '</div>';
+    });
+    h += '</div>';
+    h += '<h2>CNC &amp; PCA/PCT unit allocations <span class="hint">only allocated, qualified/approved FTE not already in RN FTE is credited</span></h2>' + allocationTable(null) +
+      '<div class="toolbar"><button type="button" class="small" data-act="add-ct" data-cat="CNC">+ CNC allocation</button><button type="button" class="small" data-act="add-ct" data-cat="PCA">+ PCA/PCT allocation</button></div>';
+    var arch = App.state.units.filter(function (u) { return C.bool(u.archived); });
+    h += '<h2>Archived (deleted) units</h2>' + deletedUnitsTable('None. Archived units keep their saved data and are excluded from calculations.');
+    h += '<h2>Data quality</h2><div class="card" data-region="issues"></div>';
+    return h;
+  }
+
+  function hoursRegion() {
+    var hm = App.result.hours, mi = App.result.month;
+    if (!mi) return '<div class="banner err" style="margin:0">Enter a valid reporting month.</div>';
+    return '<div class="explain">' + esc(mi.ym) + ': ' + mi.days + ' days, ' + mi.fridays + ' Fridays. Available monthly hours per FTE <b>' + f2(hm.hoursPerFTE) + '</b> (' + esc(hm.scheduledSource) + '). ' +
+      'Base Required FTE = required hours ÷ ' + f2(hm.hoursPerFTE) + '. ' +
+      (hm.applyReliefFactor
+        ? 'Leave &amp; absence coverage <b>applied × ' + esc(hm.reliefFactor) + '</b>: Final = Base × ' + esc(hm.reliefFactor) + '; each FTE covers ' + f2(hm.productiveHoursPerFTE) + ' productive hours for overtime.'
+        : 'Leave &amp; absence coverage <b>not applied</b>: Final = Base.') +
+      (hm.suggestedFactor ? ' Your reference leave/training/other hours (' + n2(hm.unavailableHours) + ' h) correspond to a factor of about ' + hm.suggestedFactor.toFixed(2) + '.' : '') + '</div>';
+  }
+
+  function poolsRegion() {
+    var sm = App.result.summary;
+    var row = function (lbl, hc, avail, alloc, cred) {
+      return '<tr><td class="l">' + lbl + '</td><td>' + hc + '</td><td>' + n2(avail) + '</td><td>' + n2(alloc) + '</td><td>' + n2(Math.max(0, avail - alloc)) + '</td><td>' + n2(cred) + '</td></tr>';
+    };
+    return '<div class="tablewrap"><table class="grid compact"><thead><tr><th class="l">Pool</th><th>Headcount</th><th>FTE available</th><th>Allocated</th><th>Unallocated</th><th>Credited</th></tr></thead><tbody>' +
+      row('CNC', sm.cncHC, sm.cncAvailableFTE, sm.cncAllocatedFTE, sm.cncCreditedFTEAllUnits) + row('PCA/PCT', sm.pcaHC, sm.pcaAvailableFTE, sm.pcaAllocatedFTE, sm.pcaCreditedFTEAllUnits) + '</tbody></table></div>';
+  }
+
+  function issuesRegion() {
+    var is = App.result.issues;
+    if (!is.length) return '<p class="note">No validation issues.</p>';
+    return '<ul class="lines issues">' + is.map(function (x) { return '<li class="' + x.level + '"><b>' + x.level.toUpperCase() + '</b> ' + esc(x.scope) + ': ' + esc(x.message) + '</li>'; }).join('') + '</ul>';
+  }
+
+
+  // ---------------------------------------------------------------------------
+  // SIMPLE VIEW — the default. Same data, same engine; fewer choices on screen.
+  // ---------------------------------------------------------------------------
+  function setMode(m) {
+    App.mode = m === 'full' ? 'full' : 'simple';
+    try { localStorage.setItem('nwcMode', App.mode); } catch (e) { /* ignore */ }
+    refreshChrome(); renderAll();
+  }
+  function availableFTE(r) { return r.requiredFTE === null ? null : r.requiredFTE - r.adjustedGap; }
+
+  function renderSummarySimple() {
+    return '<div data-region="hero"></div><div data-region="skpis"></div><div data-region="needsData"></div>' +
+      '<h2>Units <span class="hint">largest shortage first</span></h2><div class="tablewrap" data-region="stable"></div>' +
+      '<p class="note">Switch to <button type="button" class="link" data-act="mode" data-v="full">Full view</button> for the gap breakdown, transfers, costs and checks.</p>';
+  }
+
+  function heroRegion() {
+    var sm = App.result.summary, short = sm.finalShortageFTE > 0.005;
+    var ot = sm.uncoveredHours > 0.5
+      ? 'Estimated overtime needed: <b>' + f0(sm.uncoveredHours) + ' h</b>' + (sm.feasibleOTHours === null ? ' — set overtime eligibility in Settings to see how much is feasible.' : ' · feasible with current staff: <b>' + f0(sm.feasibleOTHours) + ' h</b>.')
+      : 'No overtime needed.';
+    return '<div class="card hero ' + (short ? 'short' : 'ok') + '"><div class="hero-k">' + (short ? 'Nurses needed' : 'Staffing') + '</div>' +
+      '<div class="hero-v">' + (short ? '▲ ' + n2(sm.finalShortageFTE) + ' <small>FTE short</small>' : '● No shortage') + '</div>' +
+      '<div class="hero-s">' + (short ? 'in ' + sm.shortageUnits + ' unit(s)' : 'All completed units are covered') +
+      (sm.unitsDataRequired ? ' · ' + sm.unitsDataRequired + ' unit(s) not yet calculated' : '') + '. ' + ot + '</div></div>';
+  }
+
+  function simpleKpisRegion() {
+    var sm = App.result.summary;
+    var avail = sm.requiredFTE - (sm.finalShortageFTE - sm.finalSurplusFTE);
+    return '<div class="kpis four">' +
+      kpi('Required', n2(sm.requiredFTE) + '<small>FTE</small>', sm.completedUnits + ' calculated units · ' + (sm.applyReliefFactor ? 'incl. leave coverage × ' + sm.reliefFactor : 'leave coverage not included')) +
+      kpi('Available', n2(avail) + '<small>FTE</small>', 'current nurses + CNC/PCA credit') +
+      kpi('Shortage', n2(sm.finalShortageFTE) + '<small>FTE</small>', sm.remainingRecruitFTE === null ? 'before overtime' : 'after overtime: ' + n2(sm.remainingRecruitFTE) + ' FTE to recruit', sm.finalShortageFTE > 0.005 ? 'short' : 'surplus') +
+      kpi('Staff (headcount)', sm.totalHC.toLocaleString('en-US'), 'RN ' + sm.currentRNHC + ' · CNC ' + sm.cncHC + ' · PCA/PCT ' + sm.pcaHC) +
+      '</div>';
+  }
+
+  function needsDataRegion() {
+    var list = App.result.units.filter(function (r) { return r.counted && r.status === S.DATA; });
+    if (!list.length) return '';
+    return '<div class="card needs"><b>Needs data (' + list.length + '):</b> ' + list.map(function (r) {
+      return '<button type="button" class="chip" data-act="goto" data-id="' + esc(r.id) + '">' + esc(r.name) + ' ›</button>';
+    }).join('') + '<div class="note">Click a unit to enter its missing numbers.</div></div>';
+  }
+
+  function simpleTableRegion() {
+    var rows = App.result.units.slice().sort(function (a, b) {
+      var ka = a.requiredFTE === null ? -1e9 : a.adjustedGap, kb = b.requiredFTE === null ? -1e9 : b.adjustedGap;
+      return kb - ka;
+    });
+    return '<table class="grid"><thead><tr><th class="l">Unit</th><th>Required</th><th>Available</th><th>Gap</th><th class="c">Status</th></tr></thead><tbody>' +
+      rows.map(function (r) {
+        return '<tr class="unit' + (r.counted ? '' : ' excluded') + '"><td class="l name"><button type="button" class="link unitlink" data-act="goto" data-id="' + esc(r.id) + '">' + esc(r.name) + '</button></td>' +
+          (r.requiredFTE === null
+            ? '<td class="note">—</td><td class="note">' + n2(r.currentFTE) + ' RN now</td><td class="note">—</td>'
+            : '<td>' + n2(r.requiredFTE) + '</td><td>' + n2(availableFTE(r)) + '</td><td>' + gap(r.adjustedGap) + '</td>') +
+          '<td class="c">' + badge(r.status) + '</td></tr>';
+      }).join('') + '</tbody></table>';
+  }
+
+  /** Simple Other & OPD: required FTE is typed directly — no methods, lists or detail panels. */
+  function renderOtherSimple() {
+    var units = activeUnits('OTHER'), hm = App.result.hours;
+    var h = '<div class="toolbar"><button type="button" class="primary" data-act="add-unit" data-sec="OTHER">+ Add Unit</button>' +
+      '<span class="note">Type the required nurses (FTE) for each unit — OPD clinics are calculated from the number of clinics. Press <b>Save</b> when done.</span>' +
+      (hm.applyReliefFactor ? '<span class="tag teal">Leave coverage × ' + esc(hm.reliefFactor) + ' added to the numbers you type</span>' : '') + '</div>';
+    h += '<div class="tablewrap"><table class="grid manual"><thead><tr><th class="l">Unit</th><th>Beds / Clinics</th><th>Required FTE</th><th>Nurses now</th><th>Gap</th><th class="c">Status</th></tr></thead><tbody>';
+    units.forEach(function (u) {
+      var r = res(u.id) || {}, manual = u.method === 'MANUAL', clinic = u.method === 'CLINIC', cp = C.capacityPath(u);
+      var ph = !manual && r.baseRequiredFTE !== null && r.baseRequiredFTE !== undefined ? n2(r.baseRequiredFTE) + ' (calculated)' : 'enter';
+      // Result is a live region; the formula inputs sit outside it so typing never loses focus.
+      var reqCell = clinic
+        ? '<td class="calcreq"><div data-region="clinicreq" data-arg="' + esc(u.id) + '"></div>' +
+          '<div class="formula" title="Required = clinics × active % × RN per clinic × open hours">' +
+          '<span>× ' + uIn(u, 'params.CLINIC.utilisationPct', 'f', ' aria-label="Active clinics % for ' + esc(u.name) + '"') + ' %</span>' +
+          '<span>× ' + uIn(u, 'params.CLINIC.rnPerClinic', 'f', ' aria-label="RN per clinic for ' + esc(u.name) + '"') + ' RN</span>' +
+          '<span>× ' + uIn(u, 'schedule.weekdayHours', 'f', ' aria-label="Open hours per day for ' + esc(u.name) + '"') + ' h</span></div></td>'
+        : '<td>' + uIn(u, 'params.MANUAL.requiredFTE', 'req', ' placeholder="' + esc(ph) + '" aria-label="Required FTE for ' + esc(u.name) + '"') +
+          '<span class="sub" data-region="mfinal" data-arg="' + esc(u.id) + '"></span></td>';
+      h += '<tr class="unit' + (r.isOpen === false ? ' closed' : '') + (r.counted === false ? ' excluded' : '') + '" data-row="' + esc(u.id) + '">' +
+        '<td class="l name"><div class="nm"><b>' + esc(u.name) + '</b>' + '<button type="button" class="editbtn" data-act="edit" data-id="' + esc(u.id) + '" title="Rename, open/close or delete" aria-label="Edit ' + esc(u.name) + '">✎</button>' + '</div>' + (r.isOpen === false ? '<span class="sub">closed</span>' : clinic ? '<span class="sub">clinic formula</span>' : '') + '</td>' +
+        '<td>' + (cp ? uIn(u, cp, 'cap', ' aria-label="' + (clinic ? 'Clinics' : 'Beds / clinics') + ' for ' + esc(u.name) + '"' + (clinic ? '' : ' placeholder="—"')) : '<span class="note">—</span>') + '</td>' +
+        reqCell +
+        '<td>' + uIn(u, 'currentRNHeadcount', 'hc', ' aria-label="Nurses now in ' + esc(u.name) + '"') + '</td>' +
+        out(u.id, 'adjustedGap', 'gap') + out(u.id, 'status', 'status', 'c') + '</tr>';
+    });
+    h += '</tbody><tfoot data-region="mtotals"></tfoot></table></div>';
+    return h;
+  }
+  /** OPD clinic formula result: clinics × active % × RN per clinic × opening hours (read-only here). */
+  function clinicReqRegion(id) {
+    var u = unit(id), r = res(id); if (!u || !r) return '';
+    var p = (u.params || {}).CLINIC || {};
+    if (r.requiredFTE === null) return DR + '<span class="sub">' + esc(r.missing.join(', ')) + '</span>';
+    return '<b>' + n2(r.requiredFTE) + '</b>' + (r.reliefFactorApplied ? '<span class="sub">incl. coverage × ' + r.reliefFactorApplied + '</span>' : '') +
+      (r.minApplied ? '<span class="sub">minimum staffing applies</span>' : '');
+  }
+  function manualFinalRegion(id) {
+    var r = res(id);
+    return r && r.reliefFactorApplied && r.requiredFTE !== null ? '= ' + n2(r.requiredFTE) + ' with coverage' : '';
+  }
+  function manualTotals() {
+    var rs = App.result.units.filter(function (r) { return r.section === 'OTHER' && r.counted; });
+    var known = rs.filter(function (r) { return r.requiredFTE !== null; });
+    var sh = known.reduce(function (a, r) { return a + Math.max(0, r.adjustedGap); }, 0);
+    return '<tr class="total"><td class="l">TOTAL' + (known.length < rs.length ? '<span class="sub">' + (rs.length - known.length) + ' unit(s) without a required number</span>' : '') + '</td><td></td>' +
+      '<td>' + n2(known.reduce(function (a, r) { return a + r.requiredFTE; }, 0)) + '</td><td>' + rs.reduce(function (a, r) { return a + r.currentHC; }, 0) + '</td>' +
+      '<td class="l">' + (sh > 0.005 ? '<span class="gap short">▲ Shortage ' + n2(sh) + '</span>' : '<span class="gap bal">No shortage</span>') + '</td><td></td></tr>';
+  }
+
+  function renderUnitsSimple(section) {
+    if (section === 'OTHER') return renderOtherSimple();
+    var units = activeUnits(section);
+    var h = '<div class="toolbar"><button type="button" class="primary" data-act="add-unit" data-sec="' + section + '">+ Add Unit</button>' +
+      '<span class="note">Type in the blue boxes — results update instantly. Press <b>Save</b> when done.</span></div>';
+    h += '<div class="tablewrap"><table class="grid"><thead><tr><th class="l">Unit</th><th class="l">Main inputs</th><th>Nurses now</th><th>Required FTE</th><th>Gap</th><th class="c">Status</th><th></th></tr></thead><tbody>';
+    units.forEach(function (u) {
+      var r = res(u.id) || {}, open = !!App.open[u.id];
+      h += '<tr class="unit' + (open ? ' open' : '') + (r.isOpen === false ? ' closed' : '') + (r.counted === false ? ' excluded' : '') + '" data-row="' + esc(u.id) + '">' +
+        '<td class="l name"><div class="nm"><b>' + esc(u.name) + '</b>' + '<button type="button" class="editbtn" data-act="edit" data-id="' + esc(u.id) + '" title="Rename, open/close or delete" aria-label="Edit ' + esc(u.name) + '">✎</button>' + '</div>' + (r.isOpen === false ? '<span class="sub">closed</span>' : '') + '</td>' +
+        '<td class="l">' + keyInputs(u) + '</td>' +
+        '<td>' + uIn(u, 'currentRNHeadcount', 'hc', ' title="Current RN headcount"') + '</td>' +
+        '<td data-region="req" data-arg="' + esc(u.id) + '"></td>' + out(u.id, 'adjustedGap', 'gap') + out(u.id, 'status', 'status', 'c') +
+        '<td><button type="button" class="expander" data-act="toggle" data-id="' + esc(u.id) + '" aria-expanded="' + open + '" title="More">' + (open ? '▾' : '▸') + '</button></td></tr>';
+      if (open) h += '<tr class="detail-row"><td class="detail-cell" colspan="7">' + renderDetailSimple(u) + '</td></tr>';
+    });
+    h += '</tbody><tfoot data-region="stotals" data-arg="' + section + '"></tfoot></table></div>';
+    return h;
+  }
+
+  function simpleTotals(section) {
+    var rs = App.result.units.filter(function (r) { return r.section === section && r.counted; });
+    var known = rs.filter(function (r) { return r.requiredFTE !== null; });
+    var req = known.reduce(function (a, r) { return a + r.requiredFTE; }, 0);
+    var sh = known.reduce(function (a, r) { return a + Math.max(0, r.adjustedGap); }, 0);
+    return '<tr class="total"><td class="l">TOTAL' + (known.length < rs.length ? '<span class="sub">' + (rs.length - known.length) + ' unit(s) not yet calculated</span>' : '') + '</td><td></td>' +
+      '<td>' + rs.reduce(function (a, r) { return a + r.currentHC; }, 0) + '</td><td>' + n2(req) + '</td><td class="l"><span class="gap short">▲ Shortage ' + n2(sh) + '</span></td><td></td><td></td></tr>';
+  }
+
+  function renderDetailSimple(u) {
+    var def = C.METHODS[u.method] || { fields: [] }, p = ensureParams(u), pre = 'params.' + u.method + '.';
+    var h = '<div class="detail simple-detail"><div class="card"><h3>What does this unit do?</h3><div class="form">';
+    if (C.allowedMethods(u).length > 1) h += '<label>Calculate by' + uSel(u, 'method', methodOptions(u), true) + '</label>';
+    h += def.fields.filter(function (f) { return f.key !== 'shiftCensus'; }).map(function (f) { return field(u, f, pre); }).join('') + '</div>';
+    Object.keys(def.tables || {}).forEach(function (tk) {
+      var t = def.tables[tk], rows = p[tk] || [];
+      h += '<h3>' + esc(t.label) + '</h3><div class="tablewrap"><table class="grid compact"><thead><tr>' +
+        t.columns.map(function (c) { return '<th' + (c.type === 'text' ? ' class="l"' : '') + '>' + esc(c.label) + '</th>'; }).join('') + '<th></th></tr></thead><tbody>';
+      rows.forEach(function (row, i) {
+        h += '<tr>' + t.columns.map(function (c) {
+          var path = pre + tk + '.' + i + '.' + c.key;
+          return '<td' + (c.type === 'text' ? ' class="l"' : '') + '>' + (c.type === 'text' ? uTxt(u, path, 'name') : uIn(u, path)) + '</td>';
+        }).join('') + '<td><button type="button" class="link" data-act="del-row" data-id="' + esc(u.id) + '" data-tk="' + tk + '" data-i="' + i + '">remove</button></td></tr>';
+      });
+      h += '</tbody></table></div><div class="toolbar"><button type="button" class="small" data-act="add-row" data-id="' + esc(u.id) + '" data-tk="' + tk + '">+ Add row</button></div>';
+    });
+    h += '</div><div class="card"><h3>Staff &amp; hours</h3><div class="form">' +
+      '<label>Nurses now (RN headcount)' + uIn(u, 'currentRNHeadcount') + '</label>' +
+      '<label>' + (u.section === 'INPATIENT' ? 'Minimum nurses per shift' : 'Minimum nurses while open') + uIn(u, 'minRNPerShift') + '</label>';
+    if (u.method !== 'ER') h += '<label>Open hours per day' + uIn(u, 'schedule.weekdayHours') + '</label><label>Friday hours (0 = closed)' + uIn(u, 'schedule.fridayHours') + '</label>';
+    h += '<label class="chk">' + uChk(u, 'isOpen', true) + 'Unit is open</label></div>' +
+      '<hr class="sep"><h3>Leave &amp; Absence Coverage</h3>' + coverageControl('Applies to all units.') + '</div>' +
+      '<div class="card"><h3>Result</h3><div data-region="sresult" data-arg="' + esc(u.id) + '"></div>' +
+      '<p class="note">CNC/PCA allocations, overrides, schedule days and archiving are in <button type="button" class="link" data-act="mode" data-v="full">Full view</button>.</p></div></div>';
+    return h;
+  }
+
+  function simpleResultRegion(id) {
+    var r = res(id); if (!r) return '';
+    if (r.status === S.DATA) return '<div class="banner warn" style="margin:0">Enter: ' + esc(r.missing.join(', ')) + '</div>';
+    if (r.status === S.CLOSED) return '<p class="note">Closed — no nurses required.</p>';
+    var row = function (k, v, cls) { return '<li' + (cls ? ' class="' + cls + '"' : '') + '><span>' + k + '</span><b>' + v + '</b></li>'; };
+    return '<ul class="result">' +
+      row('Base Required FTE', n2(r.baseRequiredFTE)) +
+      (r.reliefFactorApplied && !r.isOverride
+        ? row('Coverage Factor', esc(r.reliefFactorApplied)) + row('Coverage Addition', '+' + n2(r.coverageAdditionFTE) + ' FTE')
+        : row('Coverage Adjustment', r.isOverride ? 'Not applied (override)' : 'Not Applied')) +
+      row('Final Required FTE', n2(r.requiredFTE), 'final') +
+      row('Available FTE', n2(r.availableFTE)) +
+      row('Gap', gap(r.adjustedGap)) +
+      row('Overtime Needed', r.uncoveredHours > 0 ? f0(r.uncoveredHours) + ' h' : 'None') + '</ul>';
+  }
+
+  var BASIC_SETTINGS = ['reportingMonth', 'contractedWeeklyHours', 'scheduledHoursOverride', 'applyReliefFactor',
+    'otMaxHoursPerRN', 'otEligiblePct', 'costOTPerHour', 'cncHeadcount', 'pcaHeadcount'];
+  function renderSettingsSimple() {
+    var s = App.state.settings;
+    var h = '<div class="card" style="max-width:860px"><h3>Basic settings <span class="hint">planning assumptions — change to match your hospital</span></h3><div class="form">';
+    BASIC_SETTINGS.forEach(function (k) {
+      var f = C.SETTINGS_FIELDS.filter(function (x) { return x.key === k; })[0], v = s[k] === undefined ? '' : s[k];
+      if (k === 'applyReliefFactor') { h += '<div style="grid-column:1/-1">' + coverageControl() + '</div>'; return; }
+      h += '<label>' + esc(f.label) + '<input type="' + (f.type === 'month' ? 'month' : 'text') + '"' + (f.type === 'number' ? ' inputmode="decimal"' : '') +
+        ' data-s="' + k + '" value="' + esc(v) + '"' + (f.type === 'month' ? ' data-rr="1"' : '') + '></label>';
+    });
+    h += '</div><div data-region="hours" style="margin-top:12px"></div>' +
+      '</div><div class="card" style="max-width:860px;margin-top:16px"><h3>Deleted units <span class="hint">removed from all calculations; restore or delete permanently</span></h3>' +
+      deletedUnitsTable('No deleted units.') +
+      '<p class="note">More settings (requirement basis, reference leave hours, CNC/PCA contribution %, allocations, costs, archived units) are in <button type="button" class="link" data-act="mode" data-v="full">Full view</button>.</p></div>';
+    return h;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Edit, delete (archive) and permanent delete
+  // ---------------------------------------------------------------------------
+  function deletedUnitsTable(emptyText) {
+    var arch = App.state.units.filter(function (u) { return C.bool(u.archived); });
+    if (!arch.length) return '<p class="note">' + esc(emptyText) + '</p>';
+    return '<div class="tablewrap"><table class="grid compact"><tbody>' + arch.map(function (u) {
+      return '<tr><td class="l"><b>' + esc(u.name) + '</b> <span class="note">' + (u.section === 'INPATIENT' ? 'Inpatient' : 'Other &amp; OPD') + '</span></td>' +
+        '<td><button type="button" class="small" data-act="restore" data-id="' + esc(u.id) + '">Restore</button> ' +
+        '<button type="button" class="small danger" data-act="purge" data-id="' + esc(u.id) + '">Delete permanently</button></td></tr>';
+    }).join('') + '</tbody></table></div>';
+  }
+
+  function editUnit(id) {
+    var u = unit(id); if (!u) return;
+    confirmBox('Edit unit',
+      '<div class="form" style="grid-template-columns:1fr"><label>Unit name<input type="text" id="editName" maxlength="120" value="' + esc(u.name) + '"></label>' +
+      '<label class="chk"><input type="checkbox" id="editOpen"' + (u.isOpen !== false ? ' checked' : '') + '> Unit is open (closed units need no nurses)</label></div>' +
+      '<div class="modal-danger"><button type="button" class="danger small" id="editDelete">Delete unit…</button>' +
+      '<span class="note">Removes it from all calculations. You can restore it from Settings.</span></div>',
+      function () {
+        var name = ($('editName').value || '').trim();
+        if (!name) { toast('Enter a unit name.'); return false; }
+        if (App.state.units.some(function (x) { return x.id !== id && !C.bool(x.archived) && C.normName(x.name) === C.normName(name); })) { toast('Another unit already has that name.'); return false; }
+        var changed = name !== u.name || (u.isOpen !== false) !== $('editOpen').checked;
+        u.name = name; u.isOpen = $('editOpen').checked;
+        recompute(); renderAll();
+        if (changed) toast('Changes applied — remember to Save.');
+      }, 'Apply');
+    $('editDelete').addEventListener('click', function () { closeModal(); archiveUnit(id, true); });
+  }
+
+  function purgeUnit(id) {
+    var u = unit(id); if (!u) return;
+    var allocs = App.state.contributions.filter(function (c) { return c.unitId === id; }).length;
+    var trs = App.state.transfers.filter(function (t) { return t.sourceUnitId === id || t.destUnitId === id; }).length;
+    confirmBox('Delete permanently', 'Permanently delete <b>' + esc(u.name) + '</b> and all its data? This cannot be undone after you Save.' +
+      (allocs || trs ? '<br><br>Also removed: ' + [allocs ? allocs + ' CNC/PCA allocation(s)' : '', trs ? trs + ' transfer(s)' : ''].filter(Boolean).join(' and ') + '.' : ''),
+      function () {
+        App.state.units = App.state.units.filter(function (x) { return x.id !== id; });
+        App.state.contributions = App.state.contributions.filter(function (c) { return c.unitId !== id; });
+        App.state.transfers = App.state.transfers.filter(function (t) { return t.sourceUnitId !== id && t.destUnitId !== id; });
+        App.state.units.forEach(function (x) { if (x.relation && x.relation.unitId === id) x.relation = { type: '', unitId: '', resolution: 'UNRESOLVED' }; });
+        App.deleted.push(id); delete App.open[id];
+        recompute(); renderAll();
+        toast('Deleted — press Save to make it permanent.');
+      }, 'Delete permanently');
+  }
+
+  var REGIONS = {
+    totals: totalsRow, req: reqRegion, calc: calcRegion, tech: techRegion, basis: basisRegion, ct: ctRegion,
+    scenario: scenarioRegion, kpis: kpisRegion, otcards: otCardsRegion, waterfall: waterfallRegion, unitsTable: unitsTableRegion,
+    transfer: transferRegion, costs: costsRegion, checks: checksRegion, hours: hoursRegion, pools: poolsRegion, issues: issuesRegion,
+    mfinal: manualFinalRegion, mtotals: manualTotals, clinicreq: clinicReqRegion,
+    hero: heroRegion, skpis: simpleKpisRegion, needsData: needsDataRegion, stable: simpleTableRegion, stotals: simpleTotals, sresult: simpleResultRegion
+  };
+
+  // ---------------------------------------------------------------------------
+  // Events
+  // ---------------------------------------------------------------------------
+  function onEdit(e) {
+    var el = e.target, rr = el.hasAttribute('data-rr'), val = el.getAttribute('data-t') === 'bool' ? el.checked : el.value;
+    if (el.hasAttribute('data-u')) {
+      var u = unit(el.getAttribute('data-u')), path = el.getAttribute('data-f');
+      if (!u) return;
+      if (path === 'method') { C.switchMethod(u, val); rr = true; }
+      else if (path.indexOf('params.MANUAL.') === 0 && u.method !== 'MANUAL') { C.switchMethod(u, 'MANUAL'); setPath(u, path, val); }
+      else if (path === 'unitType') {
+        u.unitType = val;
+        if (C.allowedMethods(u).indexOf(u.method) < 0) C.switchMethod(u, C.allowedMethods(u)[0]);
+        rr = true;
+      } else setPath(u, path, val);
+      Array.prototype.forEach.call(document.querySelectorAll('[data-u="' + u.id + '"][data-f="' + path + '"]'), function (x) {
+        if (x !== el && x.type !== 'checkbox') x.value = val;
+      });
+    } else if (el.hasAttribute('data-days')) {
+      var uu = unit(el.getAttribute('data-days'));
+      var boxes = document.querySelectorAll('[data-days="' + el.getAttribute('data-days') + '"]');
+      uu.schedule = uu.schedule || {};
+      uu.schedule.openDays = Array.prototype.filter.call(boxes, function (b) { return b.checked; }).map(function (b) { return b.value; }).join(',');
+    } else if (el.hasAttribute('data-s')) {
+      App.state.settings[el.getAttribute('data-s')] = val;
+      if (el.type === 'radio') rr = true;
+    } else if (el.hasAttribute('data-tr')) {
+      App.state.transfers[Number(el.getAttribute('data-tr'))][el.getAttribute('data-f')] = val;
+    } else if (el.hasAttribute('data-ct')) {
+      App.state.contributions[Number(el.getAttribute('data-ct'))][el.getAttribute('data-f')] = val;
+    } else return;
+    recompute();
+    if (rr && e.type === 'change') renderAll(); else refreshOutputs();
+  }
+
+  function onClick(e) {
+    var b = e.target.closest('[data-act], [data-page]');
+    if (!b) return;
+    if (b.hasAttribute('data-page')) return showPage(b.getAttribute('data-page'));
+    var act = b.getAttribute('data-act'), id = b.getAttribute('data-id'), i = Number(b.getAttribute('data-i'));
+    if (act === 'toggle') { App.open[id] = !App.open[id]; renderAll(); }
+    else if (act === 'mode') setMode(b.getAttribute('data-v'));
+    else if (act === 'goto') {
+      var gu = unit(id); App.open[id] = true;
+      showPage(gu.section === 'INPATIENT' ? 'inpatient' : 'other');
+      var row = document.querySelector('#page-' + App.page + ' tr[data-row="' + id + '"]');
+      if (row) window.scrollTo(0, row.getBoundingClientRect().top + window.pageYOffset - document.querySelector('.topbar').offsetHeight - 12);
+    }
+    else if (act === 'view') { App.view[b.getAttribute('data-sec')] = b.getAttribute('data-v'); renderAll(); }
+    else if (act === 'add-unit') addUnit(b.getAttribute('data-sec'));
+    else if (act === 'archive') archiveUnit(id);
+    else if (act === 'restore') {
+      var ru = unit(id);
+      if (App.state.units.some(function (x) { return x.id !== id && !C.bool(x.archived) && C.normName(x.name) === C.normName(ru.name); })) { toast('Another active unit has the same name — rename it first.'); return; }
+      ru.archived = false; recompute(); renderAll(); toast('Restored — remember to Save.');
+    }
+    else if (act === 'edit') editUnit(id);
+    else if (act === 'purge') purgeUnit(id);
+    else if (act === 'add-row') { var uu = unit(id), p = ensureParams(uu), tk = b.getAttribute('data-tk'); p[tk] = p[tk] || []; p[tk].push({}); recompute(); renderAll(); }
+    else if (act === 'del-row') confirmBox('Remove row', 'Remove this row from ' + esc(unit(id).name) + '?', function () { ensureParams(unit(id))[b.getAttribute('data-tk')].splice(i, 1); recompute(); renderAll(); });
+    else if (act === 'add-transfer') { App.state.transfers.push({ id: newId('T-'), sourceUnitId: '', destUnitId: '', fte: '', competencyConfirmed: false, coverageCompatible: false, notes: '' }); recompute(); renderAll(); }
+    else if (act === 'del-transfer') confirmBox('Delete transfer', 'Delete transfer row ' + (i + 1) + '?', function () { App.state.transfers.splice(i, 1); recompute(); renderAll(); });
+    else if (act === 'add-ct') { App.state.contributions.push(C.newContribution(newId('A-'), b.getAttribute('data-cat'), id || '')); recompute(); renderAll(); }
+    else if (act === 'del-ct') confirmBox('Delete allocation', 'Delete this ' + (App.state.contributions[i].category === 'PCA' ? 'PCA/PCT' : 'CNC') + ' allocation?', function () { App.state.contributions.splice(i, 1); recompute(); renderAll(); });
+  }
+
+  function showPage(p) {
+    App.page = p;
+    Array.prototype.forEach.call(document.querySelectorAll('#tabs button'), function (b) { b.classList.toggle('active', b.getAttribute('data-page') === p); });
+    Array.prototype.forEach.call(document.querySelectorAll('.page'), function (s) { s.classList.toggle('active', s.id === 'page-' + p); });
+    renderAll();
+    window.scrollTo(0, 0);
+  }
+
+  function addUnit(section) {
+    if (simple() && section === 'OTHER') {
+      confirmBox('Add unit', '<div class="form" style="grid-template-columns:1fr"><label>Unit name<input type="text" id="newUnitName"></label>' +
+        '<label>Beds / clinics (optional)<input type="text" inputmode="decimal" id="newUnitCap"></label>' +
+        '<label>Required FTE (optional now)<input type="text" inputmode="decimal" id="newUnitReq"></label></div>', function () {
+        var name = ($('newUnitName').value || '').trim();
+        if (!name) { toast('Enter a unit name.'); return false; }
+        if (App.state.units.some(function (x) { return !C.bool(x.archived) && C.normName(x.name) === C.normName(name); })) { toast('A unit with that name already exists.'); return false; }
+        var u = C.newUnit(newId('U-'), name, 'OTHER', 'MANUAL', 'OTHER');
+        u.params.MANUAL.requiredFTE = ($('newUnitReq').value || '').trim();
+        u.params.MANUAL.capacity = ($('newUnitCap').value || '').trim();
+        u.sortOrder = App.state.units.reduce(function (m, x) { return Math.max(m, Number(x.sortOrder) || 0); }, 0) + 1;
+        App.state.units.push(u);
+        recompute(); renderAll();
+        toast('Unit added — remember to Save.');
+      }, 'Add Unit');
+      return;
+    }
+    var types = typeOptions(section);
+    var methodsFor = function (t) { return C.UNIT_TYPES[t].methods.map(function (m) { return '<option value="' + m + '">' + esc(C.METHODS[m].label) + '</option>'; }).join(''); };
+    confirmBox('Add ' + (section === 'INPATIENT' ? 'inpatient' : 'other / OPD') + ' unit',
+      '<div class="form" style="grid-template-columns:1fr"><label>Unit name<input type="text" id="newUnitName"></label>' +
+      '<label>Unit type<select id="newUnitType">' + optionTags(types, types[0][0]) + '</select></label>' +
+      '<label>Workload method<select id="newUnitMethod">' + methodsFor(types[0][0]) + '</select></label></div>',
+      function () {
+        var name = ($('newUnitName').value || '').trim();
+        if (!name) { toast('Enter a unit name.'); return false; }
+        if (App.state.units.some(function (x) { return !C.bool(x.archived) && C.normName(x.name) === C.normName(name); })) { toast('A unit with that name already exists.'); return false; }
+        var u = C.newUnit(newId('U-'), name, section, $('newUnitMethod').value, $('newUnitType').value);
+        u.sortOrder = App.state.units.reduce(function (m, x) { return Math.max(m, Number(x.sortOrder) || 0); }, 0) + 1;
+        App.state.units.push(u);
+        App.open[u.id] = true;
+        recompute(); renderAll();
+        toast('Unit added — enter its data, then Save.');
+      }, 'Add Unit');
+    $('newUnitType').addEventListener('change', function () { $('newUnitMethod').innerHTML = methodsFor(this.value); });
+  }
+
+  function archiveUnit(id, asDelete) {
+    var u = unit(id);
+    var refs = App.state.transfers.filter(function (t) { return t.sourceUnitId === id || t.destUnitId === id; }).length;
+    var allocs = App.state.contributions.filter(function (c) { return c.unitId === id; }).length;
+    confirmBox(asDelete ? 'Delete unit' : 'Archive unit', (asDelete ? 'Delete <b>' + esc(u.name) + '</b>? ' : 'Archive <b>' + esc(u.name) + '</b>? ') +
+      'It will be removed from all calculations and totals. Its data is kept and it can be restored from Settings.' +
+      (refs ? '<br><br>' + refs + ' transfer(s) reference this unit and will no longer be counted.' : '') +
+      (allocs ? '<br>' + allocs + ' CNC/PCA allocation(s) will no longer be credited.' : ''), function () {
+      u.archived = true; delete App.open[id]; recompute(); renderAll(); toast((asDelete ? 'Deleted' : 'Archived') + ' — remember to Save.');
+    }, asDelete ? 'Delete' : 'Archive');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Modal / toast / tooltip
+  // ---------------------------------------------------------------------------
+  var modalCb = null;
+  function confirmBox(title, bodyHtml, onOk, okLabel) {
+    $('modalTitle').textContent = title;
+    $('modalBody').innerHTML = bodyHtml;
+    $('modalOk').textContent = okLabel || 'OK';
+    modalCb = onOk;
+    $('modalBg').classList.add('open');
+    var first = $('modalBody').querySelector('input'); if (first) first.focus();
+  }
+  function closeModal() { $('modalBg').classList.remove('open'); modalCb = null; }
+  var toastTimer = null;
+  function toast(msg, ms) { var t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.classList.remove('show'); }, ms || 3500); }
+  document.addEventListener('mousemove', function (e) {
+    var t = e.target.closest && e.target.closest('[data-tip]'), tip = $('tip');
+    if (!t) { tip.style.display = 'none'; return; }
+    tip.textContent = t.getAttribute('data-tip');
+    tip.style.display = 'block';
+    tip.style.left = Math.min(e.clientX + 14, window.innerWidth - 330) + 'px';
+    tip.style.top = (e.clientY + 14) + 'px';
+  });
+
+  // ---------------------------------------------------------------------------
+  // Server calls
+  // ---------------------------------------------------------------------------
+  function load() {
+    google.script.run.withSuccessHandler(onLoaded).withFailureHandler(function (err) {
+      $('page-summary').innerHTML = '<div class="banner err">Could not load data: ' + esc(err && err.message || err) + '</div>';
+    }).getAppData();
+  }
+  function onLoaded(data) {
+    data.state.contributions = data.state.contributions || [];
+    App.saved = C.clone(data.state); App.state = C.clone(data.state); App.revision = data.revision; App.deleted = [];
+    recompute(); renderAll();
+  }
+  function save() {
+    var errs = App.result.issues.filter(function (x) { return x.level === 'error'; });
+    if (errs.length) {
+      confirmBox('Cannot save', '<p>Fix these validation errors first:</p><ul class="lines issues">' + errs.map(function (x) { return '<li class="error">' + esc(x.scope + ': ' + x.message) + '</li>'; }).join('') + '</ul>', function () {}, 'Close');
+      return;
+    }
+    App.saving = true; refreshChrome();
+    google.script.run.withSuccessHandler(function (resp) {
+      App.saving = false;
+      if (resp && resp.ok) { onLoaded(resp.data); toast('Saved.' + (resp.warnings ? ' ' + resp.warnings + ' warning(s) — see Settings → Data quality.' : '')); }
+      else {
+        refreshChrome();
+        confirmBox(resp && resp.conflict ? 'Save conflict' : 'Save rejected by server validation',
+          '<ul class="lines issues">' + ((resp && resp.errors) || ['Unknown error']).map(function (m) { return '<li class="error">' + esc(m) + '</li>'; }).join('') + '</ul>', function () {}, 'Close');
+      }
+    }).withFailureHandler(function (err) {
+      App.saving = false; refreshChrome();
+      toast('Save failed: ' + (err && err.message || err), 8000);
+    }).saveAppData({ state: App.state, revision: App.revision, deletedUnitIds: App.deleted });
+  }
+  function resetToSaved() {
+    var go = function () { $('savePill').textContent = 'Reloading…'; load(); toast('Reloaded the saved data.'); };
+    if (App.dirty) confirmBox('Reset to Saved', 'Discard all unsaved changes and reload the last saved data?', go, 'Discard changes');
+    else go();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Boot
+  // ---------------------------------------------------------------------------
+  document.addEventListener('input', function (e) { if (e.target.closest('main')) onEdit(e); });
+  document.addEventListener('change', function (e) { if (e.target.closest('main')) onEdit(e); });
+  document.addEventListener('click', function (e) { if (!e.target.closest('.modal-bg')) onClick(e); });
+  $('btnSave').addEventListener('click', save);
+  $('btnReset').addEventListener('click', resetToSaved);
+  $('modalCancel').addEventListener('click', closeModal);
+  $('modalOk').addEventListener('click', function () { var cb = modalCb; if (cb && cb() === false) return; closeModal(); });
+  window.addEventListener('beforeunload', function (e) { if (App.dirty) { e.preventDefault(); e.returnValue = ''; } });
+  window.NwcApp = App; // for diagnostics
+  load();
+})();
+</script>

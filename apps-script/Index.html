@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nursing Workforce Calculator</title>
+  <?!= include('Styles'); ?>
+</head>
+<body class="simple">
+  <header class="topbar">
+    <div class="row">
+      <div class="brand">
+        <div class="mark">N</div>
+        <div><h1>Nursing Workforce Calculator</h1><div class="sub">Planning tool · assumptions require local approval</div></div>
+      </div>
+      <span class="pill" id="monthPill">—</span>
+      <span class="pill" id="savePill">Loading…</span>
+      <span class="spacer"></span>
+      <div class="seg dark" role="group" aria-label="View"><button type="button" data-act="mode" data-v="simple" class="on">Simple</button><button type="button" data-act="mode" data-v="full">Full</button></div>
+      <button id="btnReset" type="button" class="ghost">Reset to Saved</button>
+      <button id="btnSave" type="button" class="primary" disabled>Save</button>
+    </div>
+    <nav class="tabs"><div class="inner" id="tabs">
+      <button type="button" data-page="summary" class="active">Summary</button>
+      <button type="button" data-page="inpatient">Inpatient</button>
+      <button type="button" data-page="other">Other &amp; OPD</button>
+      <button type="button" data-page="settings">Settings</button>
+    </div></nav>
+  </header>
+  <div id="banners"></div>
+  <main>
+    <section class="page active" id="page-summary"><div class="loading">Loading saved data…</div></section>
+    <section class="page" id="page-inpatient"></section>
+    <section class="page" id="page-other"></section>
+    <section class="page" id="page-settings"></section>
+  </main>
+
+  <div class="modal-bg" id="modalBg">
+    <div class="modal" role="dialog" aria-modal="true">
+      <h3 id="modalTitle"></h3>
+      <div id="modalBody"></div>
+      <div class="actions">
+        <button type="button" id="modalCancel">Cancel</button>
+        <button type="button" id="modalOk" class="primary">OK</button>
+      </div>
+    </div>
+  </div>
+  <div class="toast" id="toast"></div>
+  <div class="tip" id="tip" role="tooltip"></div>
+
+  <script><?!= engineSource ?></script>
+  <?!= include('Scripts'); ?>
+</body>
+</html>
