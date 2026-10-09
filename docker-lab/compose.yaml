@@ -1,0 +1,26 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: lab-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+      POSTGRES_DB: nursing_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+
+  jupyter:
+    image: quay.io/jupyter/datascience-notebook:latest
+    container_name: lab-jupyter
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    environment:
+      JUPYTER_TOKEN: admin123
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./notebooks:/home/jovyan/work
